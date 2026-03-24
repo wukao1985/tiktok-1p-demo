@@ -212,19 +212,22 @@ function PreviewContent() {
                     {extractedFields.map((field) => (
                       <div key={field.id} className="space-y-1">
                         <label className="text-xs text-zinc-500 font-medium">
-                          {field.label}{field.required && <span className="text-red-500">*</span>}
+                          {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
                         </label>
-                        <div className="h-10 bg-zinc-100 rounded-lg border border-zinc-200 px-3 flex items-center text-sm text-zinc-400">
-                          {field.placeholder || field.label}
-                        </div>
+                        <input
+                          type={field.tiktokFieldType === 'EMAIL' ? 'email' : field.tiktokFieldType === 'PHONE_NUMBER' ? 'tel' : 'text'}
+                          placeholder={field.placeholder || field.label}
+                          className="w-full h-10 bg-zinc-100 rounded-lg border border-zinc-200 px-3 text-sm text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 transition-colors"
+                        />
                       </div>
                     ))}
                   </div>
 
                   {/* CTA Button */}
                   <button
-                    className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-opacity hover:opacity-90"
+                    className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-opacity hover:opacity-90 active:scale-[0.98]"
                     style={{ backgroundColor: brandColors.primaryColor }}
+                    onClick={() => alert('🎉 This is a TikTok Instant Form demo — in production, this submits to TikTok Lead Generation!')}
                   >
                     {generatedCopy.tiktokCta}
                   </button>
