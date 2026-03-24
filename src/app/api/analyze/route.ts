@@ -76,10 +76,19 @@ export async function POST(request: NextRequest) {
 
     const normalizedUrl = normalizeUrl(url);
 
-    // Check for demo URLs to use specific fallbacks
+    // Check for demo URLs — return stable demo aid immediately (no KV needed)
     const lowerUrl = normalizedUrl.toLowerCase();
     const isSonoBello = lowerUrl.includes('sonobello.com');
     const isOpendoor = lowerUrl.includes('opendoor.com');
+
+    if (isSonoBello) {
+      clearTimeout(timeoutId);
+      return NextResponse.json({ success: true, data: { ...SONO_BELLO_DEMO, analysisId: 'demo_sonobello' }, requestId, latencyMs: Date.now() - startTime });
+    }
+    if (isOpendoor) {
+      clearTimeout(timeoutId);
+      return NextResponse.json({ success: true, data: { ...OPENDOOR_DEMO, analysisId: 'demo_opendoor' }, requestId, latencyMs: Date.now() - startTime });
+    }
 
     try {
       // Attempt live analysis
@@ -245,6 +254,16 @@ export async function GET(request: NextRequest) {
       },
       { status: 400 }
     );
+  }
+
+  // Special demo aids — return hardcoded fixtures without KV
+  if (aid === 'demo_sonobello') {
+    const demo = { ...SONO_BELLO_DEMO, analysisId: 'demo_sonobello' };
+    return NextResponse.json({ success: true, data: demo, requestId, latencyMs: 0 });
+  }
+  if (aid === 'demo_opendoor') {
+    const demo = { ...OPENDOOR_DEMO, analysisId: 'demo_opendoor' };
+    return NextResponse.json({ success: true, data: demo, requestId, latencyMs: 0 });
   }
 
   try {
