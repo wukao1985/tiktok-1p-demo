@@ -40,7 +40,9 @@ interface GeminiResponse {
   };
 }
 
-const ANALYSIS_PROMPT = `You are an expert web form analyzer and TikTok ads copywriter. Extract structured form field data from the provided HTML AND generate optimized copy in a single response.
+const ANALYSIS_PROMPT = `You are an expert web form analyzer and TikTok ads copywriter. Extract structured form field data from the provided multi-step HTML journey AND generate optimized copy in a single response.
+
+The HTML content contains multiple steps of a user journey (landing page → form steps → confirmation). Analyze ALL steps to understand the complete conversion flow.
 
 Analyze the HTML content and return a JSON object with the following structure:
 
@@ -82,7 +84,8 @@ Analyze the HTML content and return a JSON object with the following structure:
 }
 
 RULES FOR FIELD EXTRACTION:
-- Identify all form input fields (input, select, textarea elements)
+- Identify ALL form input fields across ALL steps of the journey
+- Deduplicate fields that appear on multiple steps (keep only unique fields)
 - For each field, determine label from <label>, placeholder, or nearby text
 - If multiple forms exist, select the one most likely to be the primary lead capture form
 - Return bounding box coordinates for the primary form only
@@ -93,9 +96,10 @@ RULES FOR FIELD EXTRACTION:
 - Set tiktokFieldType based on field purpose: FULL_NAME for name fields, EMAIL for email, PHONE_NUMBER for phone, ZIP_POST_CODE for zip, CUSTOM for all others
 
 RULES FOR COPY GENERATION:
+- Analyze the COMPLETE journey context (all steps) to understand the offer
 - Headline: Lead with benefit + urgency or curiosity gap, MAX 50 characters including spaces, use specific numbers when possible ('24 Hours' not 'Fast'), avoid superlatives like 'best', 'guaranteed results'
 - CTA: Action-oriented, first-person ('Claim My' vs 'Submit'), MAX 20 characters including spaces, use ownership language ('My', 'Your')
-- Benefits: 2-4 bullet points, MAX 60 characters each, TikTok-native: short, punchy
+- Benefits: 2-4 bullet points, MAX 60 characters each, TikTok-native: short, punchy, based on value props from the full journey
 
 COMPLIANCE RULES:
 - Medical/aesthetics: NO claims of guaranteed outcomes, NO before/after images implied to be typical, NO medical advice or diagnosis language, USE 'consultation' not 'treatment', USE 'may' not 'will' for results, set disclaimerText to: "Results may vary. Consultation required."

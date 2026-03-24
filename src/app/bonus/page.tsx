@@ -68,7 +68,7 @@ function BonusContent() {
     );
   }
 
-  const { retargeting, isSimulatedData, brandColors } = data;
+  const { retargeting, isSimulatedData, brandColors, totalJourneySteps, performance } = data;
   const { totalFormStarts, totalAbandonments, fieldBreakdown, estimatedCtrLift } = retargeting;
 
   // Find the highest abandonment field
@@ -120,6 +120,81 @@ function BonusContent() {
           <p className="text-zinc-400">Turn form abandonment into high-value retargeting audiences</p>
         </div>
 
+        {/* Journey Compression Section — NEW */}
+        <div className="mb-12">
+          <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+            <span>📊</span> Journey Compression Analysis
+          </h2>
+
+          <div className="bg-gradient-to-r from-zinc-900 to-zinc-800 rounded-2xl p-6 border border-zinc-700">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* 3P Journey Stats */}
+              <div className="bg-zinc-950/50 rounded-xl p-5 border border-zinc-800">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">😓</span>
+                  <span className="text-zinc-400 font-medium">3P Journey</span>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-3xl font-bold text-red-400">
+                    {totalJourneySteps} steps
+                  </div>
+                  <div className="text-sm text-zinc-500">~2-3 minutes</div>
+                  <div className="text-xs text-zinc-600">
+                    Multiple page loads, context switching, form fatigue
+                  </div>
+                </div>
+              </div>
+
+              {/* VS Divider */}
+              <div className="flex flex-col items-center justify-center">
+                <div className="w-12 h-12 rounded-full bg-zinc-800 flex items-center justify-center mb-2">
+                  <span className="text-zinc-500 font-bold">VS</span>
+                </div>
+                <div className="text-center">
+                  <p className="text-sm text-zinc-500">Conversion friction</p>
+                </div>
+              </div>
+
+              {/* 1P TikTok Stats */}
+              <div className="bg-zinc-950/50 rounded-xl p-5 border border-zinc-700">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-lg">✨</span>
+                  <span className="font-medium" style={{ color: TIKTOK_TEAL }}>1P TikTok</span>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-3xl font-bold" style={{ color: TIKTOK_TEAL }}>
+                    1 step
+                  </div>
+                  <div className="text-sm text-zinc-500">~15 seconds</div>
+                  <div className="text-xs text-zinc-600">
+                    Instant form, auto-filled fields, native trust
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Lift Stat */}
+            <div className="mt-6 pt-6 border-t border-zinc-700">
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center">
+                    <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="font-medium text-white">Estimated completion rate lift</p>
+                    <p className="text-xs text-zinc-500">Based on industry benchmarks for 1P vs 3P experiences</p>
+                  </div>
+                </div>
+                <div className="text-4xl font-bold text-green-400">
+                  +47%
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
           {/* Total Form Starts */}
@@ -157,10 +232,10 @@ function BonusContent() {
           <div className="space-y-6">
             {Object.entries(fieldBreakdown).map(([field, fieldData]) => {
               const isHighest = field === highestAbandonmentField;
-              const completionRate = fieldData.started > 0
+              const fieldCompletionRate = fieldData.started > 0
                 ? ((fieldData.started - fieldData.abandoned) / fieldData.started * 100)
                 : 0;
-              const abandonmentRate = 100 - completionRate;
+              const abandonmentRate = 100 - fieldCompletionRate;
 
               return (
                 <div
@@ -188,7 +263,7 @@ function BonusContent() {
                       <div
                         className="h-full transition-all duration-500"
                         style={{
-                          width: `${completionRate}%`,
+                          width: `${fieldCompletionRate}%`,
                           backgroundColor: TIKTOK_TEAL
                         }}
                       />
@@ -199,7 +274,7 @@ function BonusContent() {
                     </div>
                     <div className="flex justify-between text-xs text-zinc-500">
                       <span>{fieldData.started.toLocaleString()} started</span>
-                      <span>{completionRate.toFixed(0)}% completion rate</span>
+                      <span>{fieldCompletionRate.toFixed(0)}% completion rate</span>
                     </div>
                   </div>
                 </div>

@@ -15,6 +15,8 @@ export type FieldType =
   | 'radio'
   | 'date';
 
+export type StepType = 'landing' | 'form' | 'multistep' | 'confirmation';
+
 export type Industry =
   | 'real_estate'
   | 'medical_aesthetics'
@@ -53,6 +55,16 @@ export interface ExtractedField {
   tiktokFieldId: string;
   tiktokFieldType: TikTokFieldType; // Immutable: mapped TikTok field type
   sourceSelector: string;
+}
+
+export interface JourneyStep {
+  stepNumber: number;          // 1-based
+  url: string;
+  title: string;               // page title or step label
+  screenshotBase64?: string;   // base64 PNG, may be undefined
+  fields: ExtractedField[];    // form fields found on this step (may be empty)
+  ctaText?: string;            // button text that led to next step
+  stepType: StepType;
 }
 
 // Field Editing Rules (Section 7B)
@@ -145,6 +157,9 @@ export interface AnalyzeResponseData {
   generatedCopy: GeneratedCopy;
   performance: PerformanceMetrics;
   retargeting: RetargetingData;
+  // Journey analysis: full 3P journey steps (1 to N steps)
+  journey: JourneyStep[];
+  totalJourneySteps: number;
 }
 
 export type AnalyzeResponse = ApiResponse<AnalyzeResponseData>;
