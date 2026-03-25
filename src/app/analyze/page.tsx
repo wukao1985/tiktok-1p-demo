@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import { persistDemoFixture } from '@/lib/demo-fallback';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -17,6 +18,7 @@ function AnalyzeContent() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<ApiError | null>(null);
   const [showDemoButton, setShowDemoButton] = useState(false);
+  const [isHydratingDemo, setIsHydratingDemo] = useState(false);
   const abortController = useRef<AbortController | null>(null);
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -93,10 +95,26 @@ function AnalyzeContent() {
     runAnalysis();
   }, [rawUrl, router]);
 
-  const handleUseDemoData = () => {
-    const normalizedUrl = (rawUrl || '').toLowerCase();
-    const demoAid = normalizedUrl.includes('opendoor') ? 'demo_opendoor' : 'demo_sonobello';
-    router.replace(`/preview?aid=${demoAid}`);
+  const handleUseDemoData = async () => {
+    if (isHydratingDemo) {
+      return;
+    }
+
+    setIsHydratingDemo(true);
+
+    try {
+      const analysisId = await persistDemoFixture(rawUrl);
+      router.replace(`/preview?aid=${analysisId}`);
+    } catch (demoError) {
+      setError({
+        code: 'DEMO_FALLBACK_ERROR',
+        message: demoError instanceof Error ? demoError.message : 'Failed to load demo data',
+        retryable: true,
+      });
+      setShowDemoButton(true);
+    } finally {
+      setIsHydratingDemo(false);
+    }
   };
 
   const handleCancel = () => {
@@ -158,9 +176,10 @@ function AnalyzeContent() {
               <button
                 type="button"
                 onClick={handleUseDemoData}
-                className="rounded-xl border border-zinc-600 px-5 py-3 font-semibold text-white hover:bg-zinc-900"
+                disabled={isHydratingDemo}
+                className="rounded-xl border border-zinc-600 px-5 py-3 font-semibold text-white hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Use Demo Data
+                {isHydratingDemo ? 'Loading Demo...' : 'Use Demo Data'}
               </button>
             )}
             <Link href="/" className="rounded-xl border border-zinc-800 px-5 py-3 font-semibold text-zinc-300 hover:bg-zinc-900">

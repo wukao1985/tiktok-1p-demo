@@ -3,6 +3,7 @@ import { kv } from '@vercel/kv';
 import { v4 as uuidv4 } from 'uuid';
 
 import { analyzePage } from '@/lib/analyze-page';
+import { ANALYZE_ROUTE_TIMEOUT_MS } from '@/lib/analysis-budget';
 import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
 import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
 import { AnalyzeResponseData } from '@/types';
@@ -62,18 +63,6 @@ function getDemoPayload(url: string) {
   };
 }
 
-function getDemoFixture(aid: string) {
-  if (aid === 'demo_sonobello') {
-    return SONO_BELLO_DEMO;
-  }
-
-  if (aid === 'demo_opendoor') {
-    return OPENDOOR_DEMO;
-  }
-
-  return null;
-}
-
 function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
   const screenshotUrl =
     data.screenshot.status === 'ok' && data.screenshot.url?.startsWith('/api/screenshot')
@@ -125,6 +114,7 @@ function kvWriteErrorResponse(requestId: string, headers: Record<string, string>
         message: 'Failed to store analysis result',
         retryable: true,
       },
+      fallbackAvailable: true,
       requestId,
       timestamp: new Date().toISOString(),
     },
@@ -133,7 +123,7 @@ function kvWriteErrorResponse(requestId: string, headers: Record<string, string>
   );
 }
 
-function mapAnalyzeError(errorMessage: string): {
+function mapAnalyzeError(error: unknown): {
   status: number;
   error: {
     code: string;
@@ -142,6 +132,8 @@ function mapAnalyzeError(errorMessage: string): {
   };
   headers: Record<string, string>;
 } {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+
   if (errorMessage === 'NO_FORM_DETECTED') {
     return {
       status: 422,
@@ -192,13 +184,18 @@ function mapAnalyzeError(errorMessage: string): {
     };
   }
 
-  if (errorMessage === 'VERTEX_AI_API_KEY not configured') {
+  if (
+    /vertex ai (configuration error|authentication failed)/i.test(errorMessage) ||
+    /google_cloud_(project_id|location)/i.test(errorMessage) ||
+    /google_application_credentials/i.test(errorMessage) ||
+    /service account json/i.test(errorMessage)
+  ) {
     return {
       status: 503,
       error: {
-        code: 'AI_UNAVAILABLE',
-        message: 'VERTEX_AI_API_KEY not configured',
-        retryable: false,
+        code: 'LLM_ERROR',
+        message: 'Google Cloud AI credentials are missing or invalid',
+        retryable: true,
       },
       headers: {},
     };
@@ -259,7 +256,7 @@ export async function POST(request: NextRequest) {
   const rateLimit = await checkRateLimit(request);
   const rateLimitHeaders = getRateLimitHeaders(rateLimit);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  const timeoutId = setTimeout(() => controller.abort(), ANALYZE_ROUTE_TIMEOUT_MS);
 
   if (rateLimit.limited) {
     return jsonResponse(
@@ -408,7 +405,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const mapped = mapAnalyzeError(errorMessage);
+      const mapped = mapAnalyzeError(error);
 
       return jsonResponse(
         {
@@ -474,17 +471,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         success: true,
         data,
-        requestId,
-        latencyMs: 0,
-      });
-    }
-
-    const demoFixture = getDemoFixture(aid);
-
-    if (demoFixture) {
-      return NextResponse.json({
-        success: true,
-        data: demoFixture,
         requestId,
         latencyMs: 0,
       });

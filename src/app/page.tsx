@@ -3,6 +3,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+
+import { persistDemoFixture } from '@/lib/demo-fallback';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -14,6 +16,7 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<ApiError | null>(null);
   const [showDemoButton, setShowDemoButton] = useState(false);
+  const [isHydratingDemo, setIsHydratingDemo] = useState(false);
   const abortController = useRef<AbortController | null>(null);
   const latestRequestId = useRef<string>('');
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
@@ -131,13 +134,26 @@ export default function Home() {
     router.push(`/analyze?url=${encodeURIComponent(demoUrls[demo])}`);
   };
 
-  const handleUseDemoData = () => {
-    // Navigate with demo flag
-    const demoUrl = url.includes('opendoor') ? 'opendoor' : 'sonobello';
-    const demoData = demoUrl === 'opendoor'
-      ? 'demo_opendoor'
-      : 'demo_sonobello';
-    router.push(`/preview?aid=${demoData}`);
+  const handleUseDemoData = async () => {
+    if (isHydratingDemo) {
+      return;
+    }
+
+    setIsHydratingDemo(true);
+
+    try {
+      const analysisId = await persistDemoFixture(url);
+      router.push(`/preview?aid=${analysisId}`);
+    } catch (demoError) {
+      setError({
+        code: 'DEMO_FALLBACK_ERROR',
+        message: demoError instanceof Error ? demoError.message : 'Failed to load demo data',
+        retryable: true,
+      });
+      setShowDemoButton(true);
+    } finally {
+      setIsHydratingDemo(false);
+    }
   };
 
   return (
@@ -228,9 +244,10 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={handleUseDemoData}
-                  className="px-6 py-4 rounded-xl font-semibold border border-zinc-600 hover:bg-zinc-800 transition-colors"
+                  disabled={isHydratingDemo}
+                  className="px-6 py-4 rounded-xl font-semibold border border-zinc-600 hover:bg-zinc-800 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Use Demo Data
+                  {isHydratingDemo ? 'Loading Demo...' : 'Use Demo Data'}
                 </button>
               )}
             </div>

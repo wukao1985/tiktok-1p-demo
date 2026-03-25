@@ -4,6 +4,12 @@ import puppeteer from 'puppeteer-core';
 import type { Page, ElementHandle } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import { analyzeWithGemini } from './gemini';
+import {
+  ANALYSIS_GEMINI_BUDGET_MS,
+  ANALYSIS_SCRAPE_BUDGET_MS,
+  createAnalysisDeadline,
+  getRemainingAnalysisBudget,
+} from './analysis-budget';
 import { AnalyzeResponseData, ScreenshotAsset, JourneyStep, ExtractedField } from '@/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -75,7 +81,6 @@ const NOT_FOUND_MESSAGE_PATTERNS = [
 ];
 const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
 const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
-const JOURNEY_TIMEOUT = 6000;
 const NAV_TIMEOUT = 3000;
 const SCREENSHOT_TIMEOUT = 2000;
 
@@ -86,12 +91,12 @@ function isConfirmationUrl(url: string): boolean {
   );
 }
 
-function getRemainingBudget(startTime: number, bufferMs = 0) {
-  return JOURNEY_TIMEOUT - (Date.now() - startTime) - bufferMs;
+function getRemainingBudget(deadlineMs: number, bufferMs = 0) {
+  return getRemainingAnalysisBudget(deadlineMs, bufferMs);
 }
 
-function getBoundedTimeout(startTime: number, maxTimeoutMs: number, bufferMs = 0) {
-  return Math.min(maxTimeoutMs, Math.max(0, getRemainingBudget(startTime, bufferMs)));
+function getBoundedTimeout(deadlineMs: number, maxTimeoutMs: number, bufferMs = 0) {
+  return Math.min(maxTimeoutMs, Math.max(0, getRemainingBudget(deadlineMs, bufferMs)));
 }
 
 function createAnalyzeFailure(code: AnalyzeFailureCode) {
@@ -157,8 +162,8 @@ async function hasLoadedDocument(page: Page) {
   }
 }
 
-async function navigateToLandingPage(page: Page, url: string, startTime: number) {
-  const navigationTimeout = getBoundedTimeout(startTime, NAV_TIMEOUT, 2000);
+async function navigateToLandingPage(page: Page, url: string, scrapeDeadlineMs: number) {
+  const navigationTimeout = getBoundedTimeout(scrapeDeadlineMs, NAV_TIMEOUT, 250);
   if (navigationTimeout <= 0) {
     return;
   }
@@ -186,8 +191,8 @@ async function navigateToLandingPage(page: Page, url: string, startTime: number)
   }
 }
 
-async function takeScreenshotWithBudget(page: Page, startTime: number) {
-  const timeoutMs = getBoundedTimeout(startTime, SCREENSHOT_TIMEOUT, 250);
+async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
+  const timeoutMs = getBoundedTimeout(scrapeDeadlineMs, SCREENSHOT_TIMEOUT, 100);
   if (timeoutMs <= 0) {
     return {
       screenshotBase64: null,
@@ -331,7 +336,7 @@ async function findCTAButton(page: Page): Promise<{ element: ElementHandle<Eleme
   return { element: null, text: '' };
 }
 
-async function scrapeJourney(url: string, startTime: number): Promise<ScrapedStep[]> {
+async function scrapeJourney(url: string, scrapeDeadlineMs: number): Promise<ScrapedStep[]> {
   const steps: ScrapedStep[] = [];
   let browser = null;
 
@@ -351,8 +356,12 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
+    if (getRemainingBudget(scrapeDeadlineMs) <= 0) {
+      return steps;
+    }
+
     // Step 1: Land on the page
-    await navigateToLandingPage(page, url, startTime);
+    await navigateToLandingPage(page, url, scrapeDeadlineMs);
     await ensureNotBlocked(page);
 
     // Handle consent banners
@@ -380,7 +389,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     const {
       screenshotBase64: step1Screenshot,
       screenshotStatus: step1ScreenshotStatus,
-    } = await takeScreenshotWithBudget(page, startTime);
+    } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
 
     // Find CTA on step 1
     const { element: ctaButton, text: ctaText } = await findCTAButton(page);
@@ -397,7 +406,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     });
 
     // Check timeout
-    if (getRemainingBudget(startTime, 2000) <= 0) {
+    if (getRemainingBudget(scrapeDeadlineMs, 250) <= 0) {
       return steps;
     }
 
@@ -405,7 +414,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     if (ctaButton) {
       try {
         await ctaButton.click();
-        const postClickWait = getBoundedTimeout(startTime, 1000, 1000);
+        const postClickWait = getBoundedTimeout(scrapeDeadlineMs, 1000, 250);
         if (postClickWait > 0) {
           await new Promise((resolve) => setTimeout(resolve, postClickWait));
         }
@@ -425,7 +434,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
           const {
             screenshotBase64: step2Screenshot,
             screenshotStatus: step2ScreenshotStatus,
-          } = await takeScreenshotWithBudget(page, startTime);
+          } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
 
           // Check for multi-step indicators
           const hasNextButton = await page.evaluate(() => {
@@ -453,7 +462,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
           let subStepCount = 0;
           const maxSubSteps = 4;
 
-          while (subStepCount < maxSubSteps && getRemainingBudget(startTime, 1500) > 0) {
+          while (subStepCount < maxSubSteps && getRemainingBudget(scrapeDeadlineMs, 200) > 0) {
             const { element: nextButton } = await findCTAButton(page);
             if (!nextButton) break;
 
@@ -461,7 +470,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
             if (!NEXT_KEYWORDS.some(k => nextText.includes(k))) break;
 
             await nextButton.click();
-            const subStepWait = getBoundedTimeout(startTime, 800, 800);
+            const subStepWait = getBoundedTimeout(scrapeDeadlineMs, 800, 200);
             if (subStepWait > 0) {
               await new Promise((resolve) => setTimeout(resolve, subStepWait));
             }
@@ -489,7 +498,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
               const {
                 screenshotBase64: stepScreenshot,
                 screenshotStatus: stepScreenshotStatus,
-              } = await takeScreenshotWithBudget(page, startTime);
+              } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
 
               steps.push({
                 html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
@@ -524,11 +533,16 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
 
 export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
   const startTime = Date.now();
+  const analysisDeadlineMs = createAnalysisDeadline(startTime);
+  const scrapeDeadlineMs = Math.min(
+    startTime + ANALYSIS_SCRAPE_BUDGET_MS,
+    analysisDeadlineMs - ANALYSIS_GEMINI_BUDGET_MS
+  );
   const analysisId = `aid_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
 
   try {
-    // Scrape the multi-step journey
-    const scrapedSteps = await scrapeJourney(url, startTime);
+    // Reserve the final 5 seconds of the internal deadline for Gemini.
+    const scrapedSteps = await scrapeJourney(url, scrapeDeadlineMs);
     if (scrapedSteps.length === 0) {
       throw createAnalyzeFailure('NO_FORM_DETECTED');
     }
@@ -537,7 +551,9 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
     const firstStepScreenshot = scrapedSteps[0]?.screenshotBase64 || undefined;
     const allHtml = scrapedSteps.map((s, i) => `\n--- STEP ${i + 1} ---\nTitle: ${s.title}\nURL: ${s.url}\nFields: ${s.fields.length}\nHTML:\n${s.html.slice(0, 15000)}`).join('\n');
 
-    const geminiResult = await analyzeWithGemini(allHtml, firstStepScreenshot, url);
+    const geminiResult = await analyzeWithGemini(allHtml, firstStepScreenshot, url, {
+      deadlineMs: analysisDeadlineMs,
+    });
 
     // Build journey steps with step numbers
     const journey: JourneyStep[] = scrapedSteps.map((step, index) => ({

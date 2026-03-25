@@ -1,4 +1,5 @@
 // lib/gemini.ts
+import { GoogleAuth, type GoogleAuthOptions, type JWTInput } from 'google-auth-library';
 
 import {
   ExtractedField,
@@ -9,13 +10,16 @@ import {
   GeminiAnalysisResult,
   PrimaryFormSelection,
 } from '@/types';
+import {
+  ANALYSIS_GEMINI_BUDGET_MS,
+  getRemainingAnalysisBudget,
+} from './analysis-budget';
 
-const VERTEX_AI_API_KEY =
-  process.env.VERTEX_AI_API_KEY || '';
-const VERTEX_PROJECT =
-  process.env.VERTEX_PROJECT || 'focal-welder-485422-s2';
-const VERTEX_LOCATION =
-  process.env.VERTEX_LOCATION || 'us-central1';
+const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+const VERTEX_MODEL = 'gemini-2.0-flash';
+
+let cachedGoogleAuth: GoogleAuth | null = null;
+let cachedGoogleAuthKey = '';
 
 type VertexPart =
   | { text: string }
@@ -60,13 +64,141 @@ interface GeminiResponse {
   };
 }
 
-function getVertexEndpoint() {
-  return `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/gemini-2.0-flash:generateContent?key=${VERTEX_AI_API_KEY}`;
+interface GeminiCallOptions {
+  deadlineMs?: number;
 }
 
-function assertVertexApiKey() {
-  if (!VERTEX_AI_API_KEY) {
-    throw new Error('VERTEX_AI_API_KEY not configured');
+function getRequiredVertexEnv(
+  envName: 'GOOGLE_CLOUD_PROJECT_ID' | 'GOOGLE_CLOUD_LOCATION'
+) {
+  const value = process.env[envName]?.trim();
+
+  if (!value) {
+    throw new Error(`Vertex AI configuration error: ${envName} is not configured`);
+  }
+
+  return value;
+}
+
+function decodeBase64Credentials(encodedCredentials: string): JWTInput {
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(encodedCredentials, 'base64').toString('utf8')
+    ) as JWTInput;
+
+    if (
+      typeof parsed.client_email !== 'string' ||
+      typeof parsed.private_key !== 'string'
+    ) {
+      throw new Error('service account JSON is missing client_email or private_key');
+    }
+
+    return parsed;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Vertex AI configuration error: GOOGLE_APPLICATION_CREDENTIALS_BASE64 is invalid (${message})`
+    );
+  }
+}
+
+function getGoogleAuth(projectId: string) {
+  const encodedCredentials =
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64?.trim() || '';
+  const keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() || '';
+  const cacheKey = [projectId, encodedCredentials, keyFilename].join('::');
+
+  if (cachedGoogleAuth && cachedGoogleAuthKey === cacheKey) {
+    return cachedGoogleAuth;
+  }
+
+  const authOptions: GoogleAuthOptions = {
+    projectId,
+    scopes: [CLOUD_PLATFORM_SCOPE],
+  };
+
+  if (encodedCredentials) {
+    authOptions.credentials = decodeBase64Credentials(encodedCredentials);
+  } else if (keyFilename) {
+    authOptions.keyFilename = keyFilename;
+  } else {
+    throw new Error(
+      'Vertex AI configuration error: GOOGLE_APPLICATION_CREDENTIALS_BASE64 or GOOGLE_APPLICATION_CREDENTIALS is not configured'
+    );
+  }
+
+  cachedGoogleAuth = new GoogleAuth(authOptions);
+  cachedGoogleAuthKey = cacheKey;
+
+  return cachedGoogleAuth;
+}
+
+function getVertexEndpoint(projectId: string, location: string) {
+  return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+}
+
+function getRemainingGeminiBudget(deadlineMs?: number) {
+  if (deadlineMs === undefined) {
+    return ANALYSIS_GEMINI_BUDGET_MS;
+  }
+
+  return Math.min(
+    ANALYSIS_GEMINI_BUDGET_MS,
+    Math.max(0, getRemainingAnalysisBudget(deadlineMs))
+  );
+}
+
+function createTimeoutError(timeoutMs: number) {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  return new Error(`LLM analysis timed out after ${seconds} seconds`);
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  if (timeoutMs <= 0) {
+    throw createTimeoutError(timeoutMs);
+  }
+
+  let timeoutId: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(createTimeoutError(timeoutMs)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+async function getVertexAccessToken(projectId: string, deadlineMs?: number) {
+  try {
+    const accessToken = await withTimeout(
+      getGoogleAuth(projectId).getAccessToken(),
+      getRemainingGeminiBudget(deadlineMs)
+    );
+
+    if (!accessToken) {
+      throw new Error('empty access token');
+    }
+
+    return accessToken;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (
+        error.message.startsWith('Vertex AI configuration error:') ||
+        error.message.startsWith('LLM analysis timed out')
+      )
+    ) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Vertex AI authentication failed: ${message}`);
   }
 }
 
@@ -172,17 +304,32 @@ function parseJsonResponse<T>(text: string): T {
     [null, text];
   const jsonString = jsonMatch[1] || text;
 
-  return JSON.parse(jsonString.trim()) as T;
+  try {
+    return JSON.parse(jsonString.trim()) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Gemini response parse error: ${message}`);
+  }
 }
 
-async function callVertex(parts: VertexPart[], timeoutMs: number) {
+async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) {
+  const projectId = getRequiredVertexEnv('GOOGLE_CLOUD_PROJECT_ID');
+  const location = getRequiredVertexEnv('GOOGLE_CLOUD_LOCATION');
+  const accessToken = await getVertexAccessToken(projectId, options.deadlineMs);
+  const timeoutMs = getRemainingGeminiBudget(options.deadlineMs);
+
+  if (timeoutMs <= 0) {
+    throw createTimeoutError(timeoutMs);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(getVertexEndpoint(), {
+    const response = await fetch(getVertexEndpoint(projectId, location), {
       method: 'POST',
       headers: {
+        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -202,7 +349,12 @@ async function callVertex(parts: VertexPart[], timeoutMs: number) {
     });
 
     if (!response.ok) {
-      throw new Error(`Vertex AI API error: ${response.status} ${response.statusText}`);
+      const responseText = await response.text().catch(() => '');
+      const responseMessage = responseText ? ` - ${responseText.slice(0, 200)}` : '';
+
+      throw new Error(
+        `Vertex AI API error: ${response.status} ${response.statusText}${responseMessage}`
+      );
     }
 
     const data = await response.json();
@@ -227,90 +379,84 @@ async function callVertex(parts: VertexPart[], timeoutMs: number) {
 export async function analyzeWithGemini(
   htmlContent: string,
   screenshotBase64?: string,
-  url?: string
+  url?: string,
+  options: GeminiCallOptions = {}
 ): Promise<GeminiAnalysisResult> {
-  assertVertexApiKey();
+  const content: VertexPart[] = [
+    {
+      text: `${ANALYSIS_PROMPT}\n\nURL: ${url || 'unknown'}\n\nHTML Content:\n${htmlContent.slice(0, 50000)}`,
+    },
+  ];
 
-  try {
-    const content: VertexPart[] = [
-      {
-        text: `${ANALYSIS_PROMPT}\n\nURL: ${url || 'unknown'}\n\nHTML Content:\n${htmlContent.slice(0, 50000)}`,
+  if (screenshotBase64) {
+    content.push({
+      inlineData: {
+        mimeType: 'image/png',
+        data: screenshotBase64,
       },
-    ];
-
-    if (screenshotBase64) {
-      content.push({
-        inlineData: {
-          mimeType: 'image/png',
-          data: screenshotBase64,
-        },
-      });
-    }
-
-    const text = await callVertex(content, 5000);
-    const parsedResult = parseJsonResponse<GeminiResponse>(text);
-
-    // Transform the response to match our types
-    const extractedFields: ExtractedField[] = parsedResult.extractedFields.map(field => ({
-      id: field.id,
-      label: field.label,
-      type: field.type as ExtractedField['type'],
-      placeholder: field.placeholder,
-      required: field.required,
-      confidence: field.confidence,
-      tiktokFieldId: field.tiktokFieldId,
-      tiktokFieldType: field.tiktokFieldType as ExtractedField['tiktokFieldType'],
-      sourceSelector: field.sourceSelector
-    }));
-
-    const brandColors: BrandColors = {
-      name: parsedResult.brandColors.name,
-      primaryColor: parsedResult.brandColors.primaryColor,
-      secondaryColor: parsedResult.brandColors.secondaryColor,
-      logoUrl: parsedResult.brandColors.logoUrl
-    };
-
-    const generatedCopy: GeneratedCopy = {
-      originalHeadline: parsedResult.generatedCopy.originalHeadline,
-      tiktokHeadline: parsedResult.generatedCopy.tiktokHeadline,
-      originalCta: parsedResult.generatedCopy.originalCta,
-      tiktokCta: parsedResult.generatedCopy.tiktokCta,
-      benefits: parsedResult.generatedCopy.benefits,
-      explanation: parsedResult.generatedCopy.explanation,
-      disclaimerText: parsedResult.generatedCopy.disclaimerText
-    };
-
-    const topCandidateScore = Number(parsedResult.primaryFormSelection?.topCandidateScore);
-    const runnerUpScore = Number(parsedResult.primaryFormSelection?.runnerUpScore);
-
-    if (!Number.isFinite(topCandidateScore) || !Number.isFinite(runnerUpScore)) {
-      throw new Error('Unexpected response format from Vertex AI');
-    }
-
-    const primaryFormSelection: PrimaryFormSelection = {
-      topCandidateScore,
-      runnerUpScore,
-    };
-
-    return {
-      extractedFields,
-      brandColors,
-      generatedCopy,
-      formBoundingBox: parsedResult.formBoundingBox,
-      primaryFormSelection,
-    };
-  } catch (error) {
-    throw error;
+    });
   }
+
+  const text = await callVertex(content, options);
+  const parsedResult = parseJsonResponse<GeminiResponse>(text);
+
+  // Transform the response to match our types
+  const extractedFields: ExtractedField[] = parsedResult.extractedFields.map(field => ({
+    id: field.id,
+    label: field.label,
+    type: field.type as ExtractedField['type'],
+    placeholder: field.placeholder,
+    required: field.required,
+    confidence: field.confidence,
+    tiktokFieldId: field.tiktokFieldId,
+    tiktokFieldType: field.tiktokFieldType as ExtractedField['tiktokFieldType'],
+    sourceSelector: field.sourceSelector
+  }));
+
+  const brandColors: BrandColors = {
+    name: parsedResult.brandColors.name,
+    primaryColor: parsedResult.brandColors.primaryColor,
+    secondaryColor: parsedResult.brandColors.secondaryColor,
+    logoUrl: parsedResult.brandColors.logoUrl
+  };
+
+  const generatedCopy: GeneratedCopy = {
+    originalHeadline: parsedResult.generatedCopy.originalHeadline,
+    tiktokHeadline: parsedResult.generatedCopy.tiktokHeadline,
+    originalCta: parsedResult.generatedCopy.originalCta,
+    tiktokCta: parsedResult.generatedCopy.tiktokCta,
+    benefits: parsedResult.generatedCopy.benefits,
+    explanation: parsedResult.generatedCopy.explanation,
+    disclaimerText: parsedResult.generatedCopy.disclaimerText
+  };
+
+  const topCandidateScore = Number(parsedResult.primaryFormSelection?.topCandidateScore);
+  const runnerUpScore = Number(parsedResult.primaryFormSelection?.runnerUpScore);
+
+  if (!Number.isFinite(topCandidateScore) || !Number.isFinite(runnerUpScore)) {
+    throw new Error('Unexpected response format from Vertex AI');
+  }
+
+  const primaryFormSelection: PrimaryFormSelection = {
+    topCandidateScore,
+    runnerUpScore,
+  };
+
+  return {
+    extractedFields,
+    brandColors,
+    generatedCopy,
+    formBoundingBox: parsedResult.formBoundingBox,
+    primaryFormSelection,
+  };
 }
 
 export async function generateCopyWithGemini(
-  context: GenerateRequest['context']
+  context: GenerateRequest['context'],
+  options: GeminiCallOptions = {}
 ): Promise<GenerateResponse> {
-  assertVertexApiKey();
-
   const prompt = `${COPY_GENERATION_PROMPT}\n\nContext:\n${JSON.stringify(context, null, 2)}`;
-  const text = await callVertex([{ text: prompt }], 5000);
+  const text = await callVertex([{ text: prompt }], options);
   const result = parseJsonResponse<GenerateResponse>(text);
 
   return {
