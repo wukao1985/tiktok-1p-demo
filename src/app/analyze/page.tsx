@@ -5,7 +5,11 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { persistDemoFixture } from '@/lib/demo-fallback';
-import { readPersistedDemoMode, writePersistedDemoMode } from '@/lib/demo-mode';
+import {
+  fetchDemoModeStatus,
+  persistDemoModeFromHeaders,
+  readPersistedDemoMode,
+} from '@/lib/demo-mode';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -36,7 +40,18 @@ function AnalyzeContent() {
   useEffect(() => {
     setIsDemoMode(readPersistedDemoMode());
 
+    let isActive = true;
+
+    void fetchDemoModeStatus()
+      .then((demoModeEnabled) => {
+        if (isActive) {
+          setIsDemoMode(demoModeEnabled);
+        }
+      })
+      .catch(() => {});
+
     return () => {
+      isActive = false;
       abortController.current?.abort();
       if (progressInterval.current) {
         clearInterval(progressInterval.current);
@@ -83,11 +98,10 @@ function AnalyzeContent() {
           body: JSON.stringify({ url: rawUrl, requestId }),
           signal: controller.signal,
         });
-        const demoModeEnabled = response.headers.get('X-Demo-Mode') === 'true';
+        const demoModeEnabled = persistDemoModeFromHeaders(response.headers);
 
         if (requestId === latestRequestId.current) {
           setIsDemoMode(demoModeEnabled);
-          writePersistedDemoMode(demoModeEnabled);
         }
 
         const result = await response.json();

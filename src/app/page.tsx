@@ -6,7 +6,7 @@ import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 
 import { persistDemoFixture } from '@/lib/demo-fallback';
-import { readPersistedDemoMode } from '@/lib/demo-mode';
+import { fetchDemoModeStatus, readPersistedDemoMode } from '@/lib/demo-mode';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -25,6 +25,20 @@ export default function Home() {
 
   useEffect(() => {
     setIsDemoMode(readPersistedDemoMode());
+
+    let isActive = true;
+
+    void fetchDemoModeStatus()
+      .then((demoModeEnabled) => {
+        if (isActive) {
+          setIsDemoMode(demoModeEnabled);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   const handleSubmit = (e: React.FormEvent) => {

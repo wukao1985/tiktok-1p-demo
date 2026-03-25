@@ -321,8 +321,8 @@ async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
       const topCandidateScore = scoredForms[0]?.score ?? 0;
       const runnerUpScore = scoredForms[1]?.score ?? 0;
       const shouldRaiseUncertain =
-        formCandidates.length > 1 &&
-        (topCandidateScore < 60 || (topCandidateScore - runnerUpScore) < 15);
+        topCandidateScore < 60 ||
+        (formCandidates.length > 1 && (topCandidateScore - runnerUpScore) < 15);
 
       let selectedContainer: Element | null = null;
 

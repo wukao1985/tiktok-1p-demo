@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { analyzePage } from '@/lib/analyze-page';
 import { ANALYZE_ROUTE_TIMEOUT_MS } from '@/lib/analysis-budget';
 import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
+import { isLLMTimeoutError } from '@/lib/gemini';
 import {
   getExpiryMetadataKey,
   createExpiryMetadata,
@@ -15,7 +16,11 @@ import {
   isExpired,
   parseExpiryMetadata,
 } from '@/lib/kv-expiry';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  checkRateLimit,
+  getDemoModeHeadersForRequest,
+  getRateLimitHeaders,
+} from '@/lib/rate-limit';
 import { AnalyzeResponseData } from '@/types';
 
 export const runtime = 'nodejs';
@@ -90,6 +95,16 @@ function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
     analysisId,
     createdAt: new Date().toISOString(),
   };
+}
+
+function createTimeoutFallbackPayload(url: string) {
+  return withAnalysisId(
+    {
+      ...getFallbackData(url),
+      landingPageUrl: url,
+    },
+    `aid_${uuidv4().slice(0, 16)}`
+  );
 }
 
 function isRouteTimeoutError(error: unknown, phase?: RouteTimeoutPhase): error is RouteTimeoutError {
@@ -503,14 +518,8 @@ export async function POST(request: NextRequest) {
         'analysis'
       );
     } catch (error) {
-      if (isRouteTimeoutError(error, 'analysis')) {
-        result = withAnalysisId(
-          {
-            ...getFallbackData(normalizedUrl),
-            landingPageUrl: normalizedUrl,
-          },
-          `aid_${uuidv4().slice(0, 16)}`
-        );
+      if (isRouteTimeoutError(error, 'analysis') || isLLMTimeoutError(error)) {
+        result = createTimeoutFallbackPayload(normalizedUrl);
         fallbackReason = 'timeout';
       } else {
         const mapped = mapAnalyzeError(error);
@@ -577,6 +586,16 @@ export async function POST(request: NextRequest) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+export async function HEAD(request: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      ...getDemoModeHeadersForRequest(request),
+      'Cache-Control': 'no-store',
+    },
+  });
 }
 
 export async function GET(request: NextRequest) {

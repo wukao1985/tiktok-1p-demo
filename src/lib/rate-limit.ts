@@ -30,6 +30,19 @@ export function getClientIp(request: NextRequest) {
   return request.headers.get('x-real-ip') || 'unknown';
 }
 
+function shouldBypassRateLimit(clientIp: string, forceDemoMode: boolean) {
+  return forceDemoMode || EXEMPT_IPS.has(clientIp);
+}
+
+export function getDemoModeHeadersForRequest(request: NextRequest): Record<string, string> {
+  const forceDemoMode = process.env.FORCE_DEMO_MODE === 'true';
+  const clientIp = getClientIp(request);
+
+  return shouldBypassRateLimit(clientIp, forceDemoMode)
+    ? { 'X-Demo-Mode': 'true' }
+    : {};
+}
+
 export async function checkRateLimit(
   request: NextRequest,
   keyPrefix = 'ratelimit'
@@ -40,7 +53,7 @@ export async function checkRateLimit(
   const clientIp = getClientIp(request);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const reset = nowSeconds - (nowSeconds % windowSeconds) + windowSeconds;
-  const bypassed = forceDemoMode || EXEMPT_IPS.has(clientIp);
+  const bypassed = shouldBypassRateLimit(clientIp, forceDemoMode);
 
   if (bypassed) {
     return {
@@ -101,7 +114,7 @@ export function getRateLimitHeaders(result: RateLimitResult) {
     headers['Retry-After'] = String(result.retryAfter);
   }
 
-  if (result.forceDemoMode) {
+  if (result.bypassed) {
     headers['X-Demo-Mode'] = 'true';
   }
 

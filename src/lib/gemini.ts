@@ -68,6 +68,28 @@ interface GeminiCallOptions {
   deadlineMs?: number;
 }
 
+export class LLMTimeoutError extends Error {
+  readonly code = 'LLM_TIMEOUT';
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+    super(`LLM analysis timed out after ${seconds} seconds`);
+    this.name = 'LLMTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export function isLLMTimeoutError(error: unknown): error is LLMTimeoutError {
+  return (
+    error instanceof LLMTimeoutError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'LLM_TIMEOUT')
+  );
+}
+
 function getRequiredVertexEnv(
   envName: 'GOOGLE_CLOUD_PROJECT_ID' | 'GOOGLE_CLOUD_LOCATION'
 ) {
@@ -149,8 +171,7 @@ function getRemainingGeminiBudget(deadlineMs?: number) {
 }
 
 function createTimeoutError(timeoutMs: number) {
-  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-  return new Error(`LLM analysis timed out after ${seconds} seconds`);
+  return new LLMTimeoutError(timeoutMs);
 }
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
@@ -191,7 +212,7 @@ async function getVertexAccessToken(projectId: string, deadlineMs?: number) {
       error instanceof Error &&
       (
         error.message.startsWith('Vertex AI configuration error:') ||
-        error.message.startsWith('LLM analysis timed out')
+        isLLMTimeoutError(error)
       )
     ) {
       throw error;
@@ -367,7 +388,7 @@ async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) 
     return text as string;
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`LLM analysis timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+      throw createTimeoutError(timeoutMs);
     }
 
     throw error;
