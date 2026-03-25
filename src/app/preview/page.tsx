@@ -57,11 +57,11 @@ function FieldTypeBadge({ type }: { type: ExtractedField['tiktokFieldType'] }) {
 }
 
 function getConfidenceBadgeClassName(confidence: number) {
-  if (confidence >= 0.8) {
+  if (confidence >= 0.9) {
     return 'bg-green-500 text-white';
   }
 
-  if (confidence >= 0.5) {
+  if (confidence >= 0.8) {
     return 'bg-yellow-500 text-black';
   }
 

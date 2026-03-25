@@ -10,7 +10,13 @@ import {
   createAnalysisDeadline,
   getRemainingAnalysisBudget,
 } from './analysis-budget';
-import { AnalyzeResponseData, ScreenshotAsset, JourneyStep, ExtractedField } from '@/types';
+import {
+  AnalyzeResponseData,
+  ScreenshotAsset,
+  JourneyStep,
+  ExtractedField,
+  PrimaryFormSelection,
+} from '@/types';
 import { v4 as uuidv4 } from 'uuid';
 
 interface ScrapedStep {
@@ -83,6 +89,34 @@ const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
 const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
 const NAV_TIMEOUT = 3000;
 const SCREENSHOT_TIMEOUT = 2000;
+const FIELD_SELECTORS = [
+  'input[type="text"]:not([name*="search"]):not([placeholder*="search"])',
+  'input[type="email"]',
+  'input[type="tel"]',
+  'input[type="number"]',
+  'input[type="date"]',
+  'select',
+  'textarea',
+  'input[type="checkbox"]',
+  'input[type="radio"]',
+];
+const IGNORED_SELECTORS = [
+  '[class*="cookie"]',
+  '[class*="consent"]',
+  '[class*="gdpr"]',
+  '[class*="newsletter"]',
+  '[type="search"]',
+  '[name*="search"]',
+  'nav input',
+  'header input',
+];
+const FIELD_SELECTOR_QUERY = FIELD_SELECTORS.join(', ');
+
+interface PrimaryFormExtractionResult {
+  fields: ExtractedField[];
+  primaryFormSelection: PrimaryFormSelection;
+  shouldRaiseUncertain: boolean;
+}
 
 function isConfirmationUrl(url: string): boolean {
   const lowerUrl = url.toLowerCase();
@@ -224,93 +258,235 @@ async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
 }
 
 async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
-  return page.evaluate(() => {
-    const fields: ExtractedField[] = [];
-    const seenSelectors = new Set<string>();
+  const result = await page.evaluate(
+    ({ fieldSelectorQuery, ignoredSelectors }) => {
+      const isFormControl = (
+        element: Element
+      ): element is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement =>
+        element instanceof HTMLInputElement ||
+        element instanceof HTMLSelectElement ||
+        element instanceof HTMLTextAreaElement;
 
-    const inputs = document.querySelectorAll('input, select, textarea');
-    inputs.forEach((input, index) => {
-      const el = input as HTMLElement;
-      const tagName = el.tagName.toLowerCase();
+      const isIgnoredField = (element: Element) => {
+        if (
+          ignoredSelectors.some(
+            (selector) => element.matches(selector) || Boolean(element.closest(selector))
+          )
+        ) {
+          return true;
+        }
 
-      // Skip hidden and submit inputs
-      if (tagName === 'input') {
-        const type = (el as HTMLInputElement).type;
-        if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'image') return;
+        const searchText = [
+          element.getAttribute('name') || '',
+          element.getAttribute('placeholder') || '',
+          element.getAttribute('aria-label') || '',
+        ]
+          .join(' ')
+          .toLowerCase();
+
+        return searchText.includes('search');
+      };
+
+      const getSupportedFields = (root: ParentNode) =>
+        Array.from(root.querySelectorAll(fieldSelectorQuery))
+          .filter(isFormControl)
+          .filter((element) => !isIgnoredField(element));
+
+      const getFieldScore = (container: Element) => {
+        const inputs = getSupportedFields(container).length;
+        const rect = container.getBoundingClientRect();
+        const isVisible = rect.width > 0;
+        const hasSubmit = Boolean(
+          container.querySelector('button[type="submit"], input[type="submit"]')
+        );
+
+        return (inputs * 10) + (isVisible ? 50 : 0) + (hasSubmit ? 30 : 0) - (rect.top * 0.01);
+      };
+
+      const formCandidates = Array.from(
+        new Set(
+          getSupportedFields(document)
+            .map((field) => field.closest('form'))
+            .filter((form): form is HTMLFormElement => form instanceof HTMLFormElement)
+        )
+      );
+
+      const scoredForms = formCandidates
+        .map((form) => ({
+          form,
+          score: getFieldScore(form),
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      const topCandidateScore = scoredForms[0]?.score ?? 0;
+      const runnerUpScore = scoredForms[1]?.score ?? 0;
+      const shouldRaiseUncertain =
+        formCandidates.length > 1 &&
+        (topCandidateScore < 60 || (topCandidateScore - runnerUpScore) < 15);
+
+      let selectedContainer: Element | null = null;
+
+      if (formCandidates.length === 1) {
+        selectedContainer = formCandidates[0];
+      } else if (formCandidates.length > 1 && !shouldRaiseUncertain) {
+        selectedContainer = scoredForms[0]?.form ?? null;
+      } else if (formCandidates.length === 0) {
+        const documentFields = getSupportedFields(document);
+        if (documentFields.length > 0) {
+          selectedContainer = document.body;
+        }
       }
 
-      // Get label
-      let label = '';
-      const id = el.id;
-      const name = (el as HTMLInputElement).name;
-      const ariaLabel = el.getAttribute('aria-label');
-      const placeholder = (el as HTMLInputElement).placeholder;
-
-      if (id) {
-        const labelEl = document.querySelector(`label[for="${id}"]`);
-        if (labelEl) label = labelEl.textContent || '';
-      }
-      if (!label) {
-        const parentLabel = el.closest('label');
-        if (parentLabel) label = parentLabel.textContent || '';
-      }
-      if (!label && ariaLabel) label = ariaLabel;
-      if (!label && placeholder) label = placeholder;
-      if (!label && name) label = name;
-
-      label = label.trim().replace(/\s+/g, ' ').slice(0, 50);
-      if (!label) label = `Field ${index + 1}`;
-
-      // Determine field type
-      const inputType = (el as HTMLInputElement).type || 'text';
-      let fieldType: ExtractedField['type'] = 'text';
-      let tiktokFieldType: ExtractedField['tiktokFieldType'] = 'CUSTOM';
-
-      const lowerLabel = label.toLowerCase();
-
-      if (inputType === 'email' || lowerLabel.includes('email') || lowerLabel.includes('e-mail')) {
-        fieldType = 'email';
-        tiktokFieldType = 'EMAIL';
-      } else if (inputType === 'tel' || lowerLabel.includes('phone') || lowerLabel.includes('mobile')) {
-        fieldType = 'tel';
-        tiktokFieldType = 'PHONE_NUMBER';
-      } else if (inputType === 'number' || lowerLabel.includes('zip') || lowerLabel.includes('postal')) {
-        fieldType = 'zip';
-        tiktokFieldType = 'ZIP_POST_CODE';
-      } else if (tagName === 'select') {
-        fieldType = 'dropdown';
-      } else if (inputType === 'checkbox') {
-        fieldType = 'checkbox';
-      } else if (inputType === 'radio') {
-        fieldType = 'radio';
-      } else if (inputType === 'date') {
-        fieldType = 'date';
+      if (!selectedContainer) {
+        return {
+          fields: [],
+          primaryFormSelection: {
+            topCandidateScore,
+            runnerUpScore,
+          },
+          shouldRaiseUncertain,
+        };
       }
 
-      // Map name fields
-      if (lowerLabel.includes('name') && (lowerLabel.includes('first') || lowerLabel.includes('last'))) {
-        tiktokFieldType = 'FULL_NAME';
-      }
+      const seenSelectors = new Set<string>();
+      const fields: ExtractedField[] = [];
 
-      const selector = tagName + (name ? `[name="${name}"]` : '') + (id ? `#${id}` : '');
-      if (seenSelectors.has(selector)) return;
-      seenSelectors.add(selector);
+      getSupportedFields(selectedContainer).forEach((element, index) => {
+        const tagName = element.tagName.toLowerCase();
+        const inputType =
+          element instanceof HTMLInputElement ? element.type || 'text' : 'text';
 
-      fields.push({
-        id: `field_${index + 1}`,
-        label,
-        type: fieldType,
-        placeholder: placeholder || undefined,
-        required: el.hasAttribute('required') || false,
-        confidence: 0.9,
-        tiktokFieldId: label.toLowerCase().replace(/\s+/g, '_').slice(0, 30),
-        tiktokFieldType,
-        sourceSelector: selector
+        if (
+          inputType === 'hidden' ||
+          inputType === 'submit' ||
+          inputType === 'button' ||
+          inputType === 'image'
+        ) {
+          return;
+        }
+
+        let label = '';
+        const id = element.id;
+        const name = 'name' in element ? element.name : '';
+        const ariaLabel = element.getAttribute('aria-label');
+        const placeholder = 'placeholder' in element ? element.placeholder : '';
+
+        if (id) {
+          const labelEl = document.querySelector(`label[for="${id}"]`);
+          if (labelEl) {
+            label = labelEl.textContent || '';
+          }
+        }
+
+        if (!label) {
+          const parentLabel = element.closest('label');
+          if (parentLabel) {
+            label = parentLabel.textContent || '';
+          }
+        }
+
+        if (!label && ariaLabel) {
+          label = ariaLabel;
+        }
+
+        if (!label && placeholder) {
+          label = placeholder;
+        }
+
+        if (!label && name) {
+          label = name;
+        }
+
+        label = label.trim().replace(/\s+/g, ' ').slice(0, 50);
+        if (!label) {
+          label = `Field ${index + 1}`;
+        }
+
+        let fieldType: ExtractedField['type'] = 'text';
+        let tiktokFieldType: ExtractedField['tiktokFieldType'] = 'CUSTOM';
+        const lowerLabel = label.toLowerCase();
+
+        if (
+          inputType === 'email' ||
+          lowerLabel.includes('email') ||
+          lowerLabel.includes('e-mail')
+        ) {
+          fieldType = 'email';
+          tiktokFieldType = 'EMAIL';
+        } else if (
+          inputType === 'tel' ||
+          lowerLabel.includes('phone') ||
+          lowerLabel.includes('mobile')
+        ) {
+          fieldType = 'tel';
+          tiktokFieldType = 'PHONE_NUMBER';
+        } else if (lowerLabel.includes('zip') || lowerLabel.includes('postal')) {
+          fieldType = 'zip';
+          tiktokFieldType = 'ZIP_POST_CODE';
+        } else if (tagName === 'select') {
+          fieldType = 'dropdown';
+        } else if (inputType === 'checkbox') {
+          fieldType = 'checkbox';
+        } else if (inputType === 'radio') {
+          fieldType = 'radio';
+        } else if (inputType === 'date') {
+          fieldType = 'date';
+        } else if (inputType === 'number') {
+          fieldType = 'number';
+        }
+
+        if (
+          lowerLabel.includes('full name') ||
+          lowerLabel === 'name' ||
+          (lowerLabel.includes('name') &&
+            (lowerLabel.includes('first') || lowerLabel.includes('last')))
+        ) {
+          tiktokFieldType = 'FULL_NAME';
+        }
+
+        const selector =
+          tagName +
+          (name ? `[name="${name}"]` : '') +
+          (id ? `#${id}` : '');
+
+        if (seenSelectors.has(selector)) {
+          return;
+        }
+
+        seenSelectors.add(selector);
+        fields.push({
+          id: `field_${index + 1}`,
+          label,
+          type: fieldType,
+          placeholder: placeholder || undefined,
+          required: element.hasAttribute('required'),
+          confidence: 0.9,
+          tiktokFieldId: label.toLowerCase().replace(/\s+/g, '_').slice(0, 30),
+          tiktokFieldType,
+          sourceSelector: selector,
+        });
       });
-    });
 
-    return fields;
-  });
+      return {
+        fields,
+        primaryFormSelection: {
+          topCandidateScore,
+          runnerUpScore,
+        },
+        shouldRaiseUncertain,
+      };
+    },
+    {
+      fieldSelectorQuery: FIELD_SELECTOR_QUERY,
+      ignoredSelectors: IGNORED_SELECTORS,
+    }
+  ) as PrimaryFormExtractionResult;
+
+  if (result.shouldRaiseUncertain) {
+    throw createAnalyzeFailure('PRIMARY_FORM_UNCERTAIN');
+  }
+
+  return result.fields;
 }
 
 async function findCTAButton(page: Page): Promise<{ element: ElementHandle<Element> | null; text: string }> {
@@ -515,7 +691,11 @@ async function scrapeJourney(url: string, scrapeDeadlineMs: number): Promise<Scr
           }
         }
       } catch (error) {
-        if (isAnalyzeFailure(error, 'SCRAPING_BLOCKED') || isAnalyzeFailure(error, 'PAGE_NOT_FOUND')) {
+        if (
+          isAnalyzeFailure(error, 'SCRAPING_BLOCKED') ||
+          isAnalyzeFailure(error, 'PAGE_NOT_FOUND') ||
+          isAnalyzeFailure(error, 'PRIMARY_FORM_UNCERTAIN')
+        ) {
           throw error;
         }
 
@@ -586,12 +766,6 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
 
     if (extractedFields.length === 0) {
       throw createAnalyzeFailure('NO_FORM_DETECTED');
-    }
-
-    const { topCandidateScore, runnerUpScore } = geminiResult.primaryFormSelection;
-    const primaryFormDelta = topCandidateScore - runnerUpScore;
-    if (topCandidateScore < 60 || primaryFormDelta < 15) {
-      throw createAnalyzeFailure('PRIMARY_FORM_UNCERTAIN');
     }
 
     // Generate fallback retargeting data

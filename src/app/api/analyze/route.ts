@@ -157,7 +157,7 @@ async function storeAnalysis(data: AnalyzeResponseData, ttlSeconds: number) {
   const expiryMetadata = createExpiryMetadata(ttlSeconds);
 
   await Promise.all([
-    kv.set(`analysis:${data.analysisId}`, JSON.stringify(data), { ex: ttlSeconds }),
+    kv.set(`analysis:${data.analysisId}`, data, { ex: ttlSeconds }),
     kv.set(
       getExpiryMetadataKey('analysis', data.analysisId),
       JSON.stringify(expiryMetadata),
@@ -607,11 +607,9 @@ export async function GET(request: NextRequest) {
     ]);
 
     if (stored) {
-      const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
-
       return NextResponse.json({
         success: true,
-        data,
+        data: typeof stored === 'string' ? JSON.parse(stored) : stored,
         requestId,
         latencyMs: 0,
       });
