@@ -5,10 +5,19 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { persistDemoFixture } from '@/lib/demo-fallback';
+import { readPersistedDemoMode, writePersistedDemoMode } from '@/lib/demo-mode';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
 const TIKTOK_RED = '#FE2C55';
+
+function createClientRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `req_${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function AnalyzeContent() {
   const router = useRouter();
@@ -19,10 +28,14 @@ function AnalyzeContent() {
   const [error, setError] = useState<ApiError | null>(null);
   const [showDemoButton, setShowDemoButton] = useState(false);
   const [isHydratingDemo, setIsHydratingDemo] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const abortController = useRef<AbortController | null>(null);
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
+  const latestRequestId = useRef('');
 
   useEffect(() => {
+    setIsDemoMode(readPersistedDemoMode());
+
     return () => {
       abortController.current?.abort();
       if (progressInterval.current) {
@@ -41,14 +54,24 @@ function AnalyzeContent() {
       return;
     }
 
-    abortController.current = new AbortController();
+    abortController.current?.abort();
+    const controller = new AbortController();
+    abortController.current = controller;
+    const requestId = createClientRequestId();
+    latestRequestId.current = requestId;
+
     setError(null);
     setShowDemoButton(false);
     setProgress(0);
 
-    progressInterval.current = setInterval(() => {
-      setProgress((currentProgress) => Math.min(100, currentProgress + 100 / 80));
+    const intervalId = setInterval(() => {
+      setProgress((currentProgress) =>
+        requestId === latestRequestId.current
+          ? Math.min(100, currentProgress + 100 / 80)
+          : currentProgress
+      );
     }, 100);
+    progressInterval.current = intervalId;
 
     async function runAnalysis() {
       try {
@@ -57,10 +80,21 @@ function AnalyzeContent() {
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ url: rawUrl }),
-          signal: abortController.current?.signal,
+          body: JSON.stringify({ url: rawUrl, requestId }),
+          signal: controller.signal,
         });
+        const demoModeEnabled = response.headers.get('X-Demo-Mode') === 'true';
+
+        if (requestId === latestRequestId.current) {
+          setIsDemoMode(demoModeEnabled);
+          writePersistedDemoMode(demoModeEnabled);
+        }
+
         const result = await response.json();
+
+        if (requestId !== latestRequestId.current) {
+          return;
+        }
 
         if (result.success) {
           router.replace(`/preview?aid=${result.data.analysisId}`);
@@ -78,6 +112,10 @@ function AnalyzeContent() {
           return;
         }
 
+        if (requestId !== latestRequestId.current) {
+          return;
+        }
+
         setError({
           code: 'NETWORK_ERROR',
           message: analysisError instanceof Error ? analysisError.message : 'Network error occurred',
@@ -85,14 +123,22 @@ function AnalyzeContent() {
         });
         setShowDemoButton(true);
       } finally {
-        if (progressInterval.current) {
-          clearInterval(progressInterval.current);
+        clearInterval(intervalId);
+        if (progressInterval.current === intervalId) {
           progressInterval.current = null;
         }
       }
     }
 
     runAnalysis();
+
+    return () => {
+      controller.abort();
+      clearInterval(intervalId);
+      if (progressInterval.current === intervalId) {
+        progressInterval.current = null;
+      }
+    };
   }, [rawUrl, router]);
 
   const handleUseDemoData = async () => {
@@ -131,9 +177,16 @@ function AnalyzeContent() {
           </div>
           <span className="font-semibold text-lg">TikTok 1P Demo</span>
         </div>
-        <button type="button" onClick={handleCancel} className="text-sm text-zinc-400 hover:text-white">
-          Cancel
-        </button>
+        <div className="flex items-center gap-3">
+          {isDemoMode && (
+            <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+              Demo Mode
+            </span>
+          )}
+          <button type="button" onClick={handleCancel} className="text-sm text-zinc-400 hover:text-white">
+            Cancel
+          </button>
+        </div>
       </header>
 
       <main className="flex min-h-[calc(100vh-65px)] items-center justify-center px-4 py-12">

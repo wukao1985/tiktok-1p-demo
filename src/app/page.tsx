@@ -2,9 +2,11 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 
 import { persistDemoFixture } from '@/lib/demo-fallback';
+import { readPersistedDemoMode } from '@/lib/demo-mode';
 import { ApiError } from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -12,113 +14,18 @@ const TIKTOK_RED = '#FE2C55';
 
 export default function Home() {
   const [url, setUrl] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [isLoading] = useState(false);
+  const [progress] = useState(0);
   const [error, setError] = useState<ApiError | null>(null);
   const [showDemoButton, setShowDemoButton] = useState(false);
   const [isHydratingDemo, setIsHydratingDemo] = useState(false);
-  const abortController = useRef<AbortController | null>(null);
-  const latestRequestId = useRef<string>('');
-  const progressInterval = useRef<NodeJS.Timeout | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      if (abortController.current) {
-        abortController.current.abort();
-      }
-      if (progressInterval.current) {
-        clearInterval(progressInterval.current);
-      }
-    };
+    setIsDemoMode(readPersistedDemoMode());
   }, []);
-
-  const startProgress = () => {
-    setProgress(0);
-    const duration = 8000; // 8 seconds
-    const interval = 100; // Update every 100ms
-    const increment = 100 / (duration / interval);
-
-    progressInterval.current = setInterval(() => {
-      setProgress(prev => {
-        const next = prev + increment;
-        return next >= 100 ? 100 : next;
-      });
-    }, interval);
-  };
-
-  const stopProgress = () => {
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-      progressInterval.current = null;
-    }
-    setProgress(0);
-  };
-
-  const handleAnalyze = async (inputUrl: string) => {
-    // Cancel any in-flight request
-    if (abortController.current) {
-      abortController.current.abort();
-    }
-
-    abortController.current = new AbortController();
-    const requestId = `req_${Date.now().toString(36)}`;
-    latestRequestId.current = requestId;
-
-    setIsLoading(true);
-    setError(null);
-    setShowDemoButton(false);
-    startProgress();
-
-    try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ url: inputUrl, requestId }),
-        signal: abortController.current.signal
-      });
-
-      const data = await response.json();
-
-      // Stale response check
-      if (requestId !== latestRequestId.current) {
-        console.log('Stale response ignored');
-        return;
-      }
-
-      stopProgress();
-
-      if (data.success) {
-        // Navigate to preview page
-        router.push(`/preview?aid=${data.data.analysisId}`);
-      } else {
-        setError(data.error);
-        if (data.fallbackAvailable) {
-          setShowDemoButton(true);
-        }
-        setIsLoading(false);
-      }
-    } catch (err) {
-      stopProgress();
-
-      if (err instanceof Error && err.name === 'AbortError') {
-        console.log('Request cancelled');
-        setIsLoading(false);
-        return;
-      }
-
-      setError({
-        code: 'NETWORK_ERROR',
-        message: err instanceof Error ? err.message : 'Network error occurred',
-        retryable: true
-      });
-      setShowDemoButton(true);
-      setIsLoading(false);
-    }
-  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -131,7 +38,17 @@ export default function Home() {
       sonobello: 'https://www.sonobello.com/consultation/',
       opendoor: 'https://www.opendoor.com'
     };
-    router.push(`/analyze?url=${encodeURIComponent(demoUrls[demo])}`);
+    const demoUrl = demoUrls[demo];
+
+    flushSync(() => {
+      setUrl(demoUrl);
+    });
+
+    if (inputRef.current) {
+      inputRef.current.value = demoUrl;
+    }
+
+    router.push(`/analyze?url=${encodeURIComponent(demoUrl)}`);
   };
 
   const handleUseDemoData = async () => {
@@ -166,6 +83,11 @@ export default function Home() {
           </div>
           <span className="font-semibold text-lg">TikTok 1P Demo</span>
         </div>
+        {isDemoMode && (
+          <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">
+            Demo Mode
+          </span>
+        )}
       </header>
 
       {/* Main Content */}
@@ -187,6 +109,7 @@ export default function Home() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="relative">
               <input
+                ref={inputRef}
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}

@@ -1,0 +1,13 @@
+Re-verified the current implementation against `SPEC.md` and all prior findings in `impl-review-r1.md` through `impl-review-r5.md`. Prior issues not listed below appear closed.
+
+[MAJOR] Section 15: Demo buttons still fail acceptance test A2 — `src/app/page.tsx` sends "Try Opendoor" / "Try Sono Bello" straight to `/analyze?url=...` without ever setting the landing-page input value, so the explicit must-pass contract `input.value === "https://www.opendoor.com"` is still false. The landing-flow fixes from earlier rounds closed A3/A5, but A2 remains open. — fix: on demo-button click, first set the input state to the canonical demo URL and then navigate to `/analyze?url=...`, or otherwise restructure the shortcut flow so both A2 and A3 are satisfied.
+
+[MAJOR] Section 15: Confidence badge thresholds are still not implemented — the L1 field list in `src/app/preview/page.tsx` now shows confidence text, but every badge uses the same neutral `bg-zinc-200` styling regardless of score. Acceptance tests A9-A11 still fail, so the earlier R1 confidence-badge gap is only partially closed. — fix: derive the badge class from `field.confidence` and render green / yellow / red threshold styles that match the spec's acceptance criteria.
+
+[MINOR] Section 9: The active `/analyze` flow still omits client request IDs and stale-response protection — `src/app/analyze/page.tsx` posts only `{ url }`, creates no `latestRequestId`, and does not guard against a slower superseded response winning the navigation race. The normal happy path usually masks this, but the documented race-handling contract is not implemented in the actual entry flow. — fix: generate `requestId` client-side on `/analyze`, include it in the POST body, track the latest request ID, and ignore late responses from replaced requests.
+
+[MINOR] Section 14: Demo-mode bypass has no visible UI badge — `src/lib/rate-limit.ts` emits `X-Demo-Mode: true`, but neither `src/app/page.tsx` nor `src/app/analyze/page.tsx` renders the required "Demo Mode" badge when bypass is active. — fix: surface demo-mode state to the client and render a persistent badge anywhere the rep starts or watches analysis.
+
+[MINOR] Section 15: Form preview acceptance hooks still do not match the spec — in `PhonePreview`, disclaimer text renders below the CTA but lacks `data-testid="disclaimer"`, and when `logoUrl` is absent the component still renders a fallback initial avatar instead of hiding the logo slot entirely. That leaves A13f and A13g failing even though the UI is visually close. — fix: add the required disclaimer test hook and suppress the logo container when `logoUrl` is undefined.
+
+Count: 0 FATAL, 2 MAJOR, 3 MINOR

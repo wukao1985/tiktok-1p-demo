@@ -56,6 +56,18 @@ function FieldTypeBadge({ type }: { type: ExtractedField['tiktokFieldType'] }) {
   );
 }
 
+function getConfidenceBadgeClassName(confidence: number) {
+  if (confidence >= 0.8) {
+    return 'bg-green-500 text-white';
+  }
+
+  if (confidence >= 0.5) {
+    return 'bg-yellow-500 text-black';
+  }
+
+  return 'bg-red-500 text-white';
+}
+
 function guessIndustry(url: string): Industry {
   const lowerUrl = url.toLowerCase();
 
@@ -143,15 +155,11 @@ function PhonePreview({
         <div className="bg-white rounded-[2rem] overflow-hidden">
           <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: primaryColor }}>
             <div className="flex items-center gap-2">
-              {logoUrl ? (
+              {logoUrl && (
                 <>
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={logoUrl} alt="Logo" className="w-6 h-6 rounded" />
+                  <img data-testid="brand-logo" src={logoUrl} alt="Logo" className="w-6 h-6 rounded" />
                 </>
-              ) : (
-                <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center">
-                  <span className="text-xs font-bold text-white">{brandName.charAt(0)}</span>
-                </div>
               )}
               <span className="text-white text-sm font-medium truncate max-w-[120px]">
                 {brandName}
@@ -204,7 +212,7 @@ function PhonePreview({
             </button>
 
             {copy.disclaimerText && (
-              <p className="text-[10px] text-zinc-400 text-center leading-tight">
+              <p data-testid="disclaimer" className="text-[10px] text-zinc-400 text-center leading-tight">
                 {copy.disclaimerText}
               </p>
             )}
@@ -727,7 +735,9 @@ function PreviewContent() {
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="font-semibold text-zinc-900">{field.label}</h3>
                         <FieldTypeBadge type={field.tiktokFieldType} />
-                        <span className="rounded-full bg-zinc-200 px-2.5 py-1 text-[11px] font-medium text-zinc-700">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${getConfidenceBadgeClassName(field.confidence)}`}
+                        >
                           {(field.confidence * 100).toFixed(0)}% confidence
                         </span>
                         {field.required && (
