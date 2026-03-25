@@ -4,9 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
-const PLACEHOLDER_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-
 function decodePngBytes(pngBase64: string) {
   return Buffer.from(pngBase64.replace(/^data:image\/png;base64,/, ''), 'base64');
 }
@@ -31,24 +28,46 @@ export async function GET(request: NextRequest) {
 
   try {
     const storedScreenshot = await kv.get<string>(`screenshot:${id}`);
-    const pngBase64 = storedScreenshot || PLACEHOLDER_PNG_BASE64;
+    if (!storedScreenshot) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'SCREENSHOT_NOT_FOUND',
+            message: 'No screenshot found for analysis ID',
+            retryable: false,
+          },
+        },
+        {
+          status: 404,
+          headers: {
+            'X-Analysis-Id': id,
+          },
+        }
+      );
+    }
 
-    return new NextResponse(decodePngBytes(pngBase64), {
+    return new NextResponse(decodePngBytes(storedScreenshot), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=60',
+        'Cache-Control': 'public, max-age=300',
+        'X-Analysis-Id': id,
       },
     });
   } catch (error) {
     console.error('Screenshot KV read error:', error);
 
-    return new NextResponse(decodePngBytes(PLACEHOLDER_PNG_BASE64), {
-      status: 200,
-      headers: {
-        'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=60',
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: 'KV_READ_ERROR',
+          message: 'Failed to retrieve screenshot',
+          retryable: true,
+        },
       },
-    });
+      { status: 503 }
+    );
   }
 }

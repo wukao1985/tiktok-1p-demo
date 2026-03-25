@@ -7,7 +7,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
   landingPageUrl: 'https://www.sonobello.com/consultation/',
   screenshot: {
     status: 'ok',
-    url: '/api/screenshot?id=demo_sonobello'
+    url: '/sonobello-step1.png'
   },
   isSimulatedData: true,
   createdAt: '2024-03-24T18:30:00Z',
@@ -119,7 +119,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.sonobello.com/consultation/',
       title: 'Sono Bello — Body Contouring & Liposuction',
-      screenshotUrl: '/api/screenshot?id=demo_sonobello',
+      screenshotUrl: '/sonobello-step1.png',
       fields: [],
       ctaText: 'See If You Qualify',
       stepType: 'landing'
@@ -210,7 +210,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
   landingPageUrl: 'https://www.opendoor.com',
   screenshot: {
     status: 'ok',
-    url: '/api/screenshot?id=demo_opendoor'
+    url: '/opendoor-step1.png'
   },
   isSimulatedData: true,
   createdAt: '2024-03-24T18:30:00Z',
@@ -333,7 +333,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.opendoor.com',
       title: 'Opendoor — Sell Your Home',
-      screenshotUrl: '/api/screenshot?id=demo_opendoor',
+      screenshotUrl: '/opendoor-step1.png',
       fields: [],
       ctaText: 'Get Your Offer',
       stepType: 'landing'

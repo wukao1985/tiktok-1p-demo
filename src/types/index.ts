@@ -89,6 +89,11 @@ export interface FormBoundingBox {
   height: number;
 }
 
+export interface PrimaryFormSelection {
+  topCandidateScore: number;
+  runnerUpScore: number;
+}
+
 export interface GeneratedCopy {
   originalHeadline: string;
   tiktokHeadline: string;
@@ -161,6 +166,14 @@ export interface AnalyzeResponseData {
   // Journey analysis: full 3P journey steps (1 to N steps)
   journey: JourneyStep[];
   totalJourneySteps: number;
+}
+
+export interface GeminiAnalysisResult {
+  extractedFields: ExtractedField[];
+  formBoundingBox: FormBoundingBox;
+  brandColors: BrandColors;
+  generatedCopy: GeneratedCopy;
+  primaryFormSelection: PrimaryFormSelection;
 }
 
 export type AnalyzeResponse = ApiResponse<AnalyzeResponseData>;

@@ -1,12 +1,13 @@
 // lib/gemini.ts
 
 import {
-  AnalyzeResponseData,
   ExtractedField,
   BrandColors,
   GeneratedCopy,
   GenerateRequest,
   GenerateResponse,
+  GeminiAnalysisResult,
+  PrimaryFormSelection,
 } from '@/types';
 
 const VERTEX_AI_API_KEY =
@@ -37,6 +38,10 @@ interface GeminiResponse {
     y: number;
     width: number;
     height: number;
+  };
+  primaryFormSelection: {
+    topCandidateScore: number;
+    runnerUpScore: number;
   };
   brandColors: {
     name: string;
@@ -91,6 +96,10 @@ Analyze the HTML content and return a JSON object with the following structure:
     "width": 480,
     "height": 520
   },
+  "primaryFormSelection": {
+    "topCandidateScore": 78,
+    "runnerUpScore": 42
+  },
   "brandColors": {
     "name": "Brand Name",
     "primaryColor": "#E91E63",
@@ -113,6 +122,9 @@ RULES FOR FIELD EXTRACTION:
 - Deduplicate fields that appear on multiple steps (keep only unique fields)
 - For each field, determine label from <label>, placeholder, or nearby text
 - If multiple forms exist, select the one most likely to be the primary lead capture form
+- Score the top candidate form from 0-100 and score the runner-up from 0-100 using the same rubric
+- Set runnerUpScore to 0 if there is no meaningful second candidate
+- The score should reflect how clearly the form is the primary lead capture experience, not just whether any form exists
 - Return bounding box coordinates for the primary form only
 - Confidence < 0.8 should be rare—use when label is unclear or type is ambiguous
 - Map similar fields: 'First' → 'First Name', 'E-mail' → 'Email'
@@ -216,7 +228,7 @@ export async function analyzeWithGemini(
   htmlContent: string,
   screenshotBase64?: string,
   url?: string
-): Promise<Partial<AnalyzeResponseData>> {
+): Promise<GeminiAnalysisResult> {
   assertVertexApiKey();
 
   try {
@@ -268,11 +280,24 @@ export async function analyzeWithGemini(
       disclaimerText: parsedResult.generatedCopy.disclaimerText
     };
 
+    const topCandidateScore = Number(parsedResult.primaryFormSelection?.topCandidateScore);
+    const runnerUpScore = Number(parsedResult.primaryFormSelection?.runnerUpScore);
+
+    if (!Number.isFinite(topCandidateScore) || !Number.isFinite(runnerUpScore)) {
+      throw new Error('Unexpected response format from Vertex AI');
+    }
+
+    const primaryFormSelection: PrimaryFormSelection = {
+      topCandidateScore,
+      runnerUpScore,
+    };
+
     return {
       extractedFields,
       brandColors,
       generatedCopy,
-      formBoundingBox: parsedResult.formBoundingBox
+      formBoundingBox: parsedResult.formBoundingBox,
+      primaryFormSelection,
     };
   } catch (error) {
     throw error;

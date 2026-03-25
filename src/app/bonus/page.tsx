@@ -70,6 +70,7 @@ function BonusContent() {
 
   const { retargeting, totalJourneySteps } = data;
   const { totalFormStarts, totalAbandonments, fieldBreakdown, estimatedCtrLift } = retargeting;
+  const estimatedLiftPercent = Math.round(estimatedCtrLift * 100);
 
   // Find the highest abandonment field
   let highestAbandonmentField = '';
@@ -176,12 +177,12 @@ function BonusContent() {
                     </svg>
                   </div>
                   <div>
-                    <p className="font-medium text-white">Estimated completion rate lift</p>
-                    <p className="text-xs text-zinc-500">Based on industry benchmarks for 1P vs 3P experiences</p>
+                    <p className="font-medium text-white">Estimated retargeting lift</p>
+                    <p className="text-xs text-zinc-500">Derived from the stored analysis payload shown below</p>
                   </div>
                 </div>
                 <div className="text-4xl font-bold text-green-400">
-                  +47%
+                  +{estimatedLiftPercent}%
                 </div>
               </div>
             </div>
@@ -212,7 +213,7 @@ function BonusContent() {
           <div className="bg-zinc-900 rounded-2xl p-6 border border-zinc-800">
             <div className="text-zinc-400 text-sm mb-1">Est. CTR Lift</div>
             <div className="text-4xl font-bold text-green-400">
-              +{(estimatedCtrLift * 100).toFixed(0)}%
+              +{estimatedLiftPercent}%
             </div>
             <div className="text-zinc-500 text-sm mt-2">From retargeting audience</div>
           </div>

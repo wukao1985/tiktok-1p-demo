@@ -18,6 +18,22 @@ interface ScrapedStep {
   stepType: JourneyStep['stepType'];
 }
 
+type AnalyzeFailureCode =
+  | 'SCRAPING_BLOCKED'
+  | 'PAGE_NOT_FOUND'
+  | 'NO_FORM_DETECTED'
+  | 'PRIMARY_FORM_UNCERTAIN';
+
+class AnalyzeFailure extends Error {
+  code: AnalyzeFailureCode;
+
+  constructor(code: AnalyzeFailureCode) {
+    super(code);
+    this.name = 'AnalyzeFailure';
+    this.code = code;
+  }
+}
+
 const CTA_KEYWORDS = [
   'get started', 'book', 'schedule', 'consult', 'free', 'start', 'contact',
   'apply', 'sign up', 'try', 'learn more', 'see', 'get', 'continue',
@@ -36,6 +52,29 @@ const BOT_BLOCK_KEYWORDS = [
   'security check',
   'blocked',
 ];
+const BOT_BLOCK_SELECTORS = [
+  'iframe[src*="captcha"]',
+  'iframe[src*="challenge"]',
+  'iframe[title*="challenge"]',
+  '[id*="captcha"]',
+  '[class*="captcha"]',
+  '[data-sitekey]',
+  '[name="cf-turnstile-response"]',
+  '.cf-turnstile',
+  '#challenge-running',
+  'form[action*="challenge"]',
+];
+const BOT_BLOCK_URL_KEYWORDS = ['captcha', 'challenge', 'blocked', 'deny', 'verify'];
+const NOT_FOUND_MESSAGE_PATTERNS = [
+  'err_name_not_resolved',
+  'enotfound',
+  'err_connection_refused',
+  'err_address_unreachable',
+  'err_connection_closed',
+  'ns_error_unknown_host',
+];
+const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
+const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
 const JOURNEY_TIMEOUT = 6000;
 const NAV_TIMEOUT = 3000;
 const SCREENSHOT_TIMEOUT = 2000;
@@ -55,12 +94,96 @@ function getBoundedTimeout(startTime: number, maxTimeoutMs: number, bufferMs = 0
   return Math.min(maxTimeoutMs, Math.max(0, getRemainingBudget(startTime, bufferMs)));
 }
 
-async function detectBotProtection(page: Page) {
-  const pageText = await page.evaluate(() => {
-    return `${document.title}\n${document.body?.innerText || ''}`.toLowerCase();
-  });
+function createAnalyzeFailure(code: AnalyzeFailureCode) {
+  return new AnalyzeFailure(code);
+}
 
-  return BOT_BLOCK_KEYWORDS.some((keyword) => pageText.includes(keyword));
+function isAnalyzeFailure(error: unknown, code?: AnalyzeFailureCode): error is AnalyzeFailure {
+  return error instanceof AnalyzeFailure && (!code || error.code === code);
+}
+
+function normalizeNavigationError(error: unknown) {
+  if (isAnalyzeFailure(error)) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+
+  if (NOT_FOUND_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern)) || /\b404\b/.test(message)) {
+    return createAnalyzeFailure('PAGE_NOT_FOUND');
+  }
+
+  if (/captcha|challenge|blocked|access denied|forbidden|\b403\b|\b429\b/.test(message)) {
+    return createAnalyzeFailure('SCRAPING_BLOCKED');
+  }
+
+  return error;
+}
+
+async function detectBotProtection(page: Page) {
+  const urlMatch = BOT_BLOCK_URL_KEYWORDS.some((keyword) => page.url().toLowerCase().includes(keyword));
+  const domSignal = await page.evaluate(
+    ({ keywords, selectors }) => {
+      const pageText = `${document.title}\n${document.body?.innerText || ''}`.toLowerCase();
+      const keywordMatch = keywords.some((keyword) => pageText.includes(keyword));
+      const selectorMatch = selectors.some((selector) => Boolean(document.querySelector(selector)));
+      const titleMatch = /just a moment|verify|attention required|access denied/i.test(document.title);
+
+      return keywordMatch || selectorMatch || titleMatch;
+    },
+    {
+      keywords: BOT_BLOCK_KEYWORDS,
+      selectors: BOT_BLOCK_SELECTORS,
+    }
+  );
+
+  return urlMatch || domSignal;
+}
+
+async function ensureNotBlocked(page: Page) {
+  if (await detectBotProtection(page)) {
+    throw createAnalyzeFailure('SCRAPING_BLOCKED');
+  }
+}
+
+async function hasLoadedDocument(page: Page) {
+  try {
+    return await page.evaluate(() => {
+      const bodyText = document.body?.innerText?.trim() || '';
+      return Boolean(document.title || bodyText || document.body?.children.length);
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function navigateToLandingPage(page: Page, url: string, startTime: number) {
+  const navigationTimeout = getBoundedTimeout(startTime, NAV_TIMEOUT, 2000);
+  if (navigationTimeout <= 0) {
+    return;
+  }
+
+  try {
+    const response = await page.goto(url, {
+      waitUntil: 'networkidle2',
+      timeout: navigationTimeout,
+    });
+    const status = response?.status();
+
+    if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
+      throw createAnalyzeFailure('SCRAPING_BLOCKED');
+    }
+
+    if (status && NOT_FOUND_STATUS_CODES.has(status)) {
+      throw createAnalyzeFailure('PAGE_NOT_FOUND');
+    }
+  } catch (error) {
+    if (error instanceof Error && /timeout/i.test(error.message) && await hasLoadedDocument(page)) {
+      return;
+    }
+
+    throw normalizeNavigationError(error);
+  }
 }
 
 async function takeScreenshotWithBudget(page: Page, startTime: number) {
@@ -75,7 +198,7 @@ async function takeScreenshotWithBudget(page: Page, startTime: number) {
   try {
     const screenshotPromise = page.screenshot({
       type: 'png',
-      fullPage: false,
+      fullPage: true,
       encoding: 'base64',
     });
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -229,23 +352,8 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     );
 
     // Step 1: Land on the page
-    try {
-      const navigationTimeout = getBoundedTimeout(startTime, NAV_TIMEOUT, 2000);
-      if (navigationTimeout <= 0) {
-        return steps;
-      }
-
-      await page.goto(url, {
-        waitUntil: 'networkidle2',
-        timeout: navigationTimeout
-      });
-    } catch {
-      // Continue even if navigation times out
-    }
-
-    if (await detectBotProtection(page)) {
-      throw new Error('bot blocked');
-    }
+    await navigateToLandingPage(page, url, startTime);
+    await ensureNotBlocked(page);
 
     // Handle consent banners
     try {
@@ -309,9 +417,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
           return !!modal;
         });
 
-        if (await detectBotProtection(page)) {
-          throw new Error('bot blocked');
-        }
+        await ensureNotBlocked(page);
 
         if (step2Url !== step1Url || hasModal) {
           const step2Fields = await extractFieldsFromPage(page);
@@ -360,9 +466,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
               await new Promise((resolve) => setTimeout(resolve, subStepWait));
             }
 
-            if (await detectBotProtection(page)) {
-              throw new Error('bot blocked');
-            }
+            await ensureNotBlocked(page);
 
             // Check for confirmation page
             const currentUrl = page.url();
@@ -401,7 +505,11 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
             subStepCount++;
           }
         }
-      } catch {
+      } catch (error) {
+        if (isAnalyzeFailure(error, 'SCRAPING_BLOCKED') || isAnalyzeFailure(error, 'PAGE_NOT_FOUND')) {
+          throw error;
+        }
+
         // Continue with what we have
       }
     }
@@ -421,6 +529,9 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
   try {
     // Scrape the multi-step journey
     const scrapedSteps = await scrapeJourney(url, startTime);
+    if (scrapedSteps.length === 0) {
+      throw createAnalyzeFailure('NO_FORM_DETECTED');
+    }
 
     // Analyze all steps with Gemini (use first step screenshot as primary)
     const firstStepScreenshot = scrapedSteps[0]?.screenshotBase64 || undefined;
@@ -458,16 +569,13 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
       : deduplicatedFields;
 
     if (extractedFields.length === 0) {
-      throw new Error('NO_FORM_DETECTED');
+      throw createAnalyzeFailure('NO_FORM_DETECTED');
     }
 
-    // Check form confidence — if primary form is weak or too close to runner-up, signal uncertainty
-    const formScore = (geminiResult as Record<string, unknown>).formConfidence as number ?? 100;
-    if (formScore < 40) {
-      throw new Error('NO_FORM_DETECTED');
-    }
-    if (formScore < 60) {
-      throw new Error('PRIMARY_FORM_UNCERTAIN');
+    const { topCandidateScore, runnerUpScore } = geminiResult.primaryFormSelection;
+    const primaryFormDelta = topCandidateScore - runnerUpScore;
+    if (topCandidateScore < 60 || primaryFormDelta < 15) {
+      throw createAnalyzeFailure('PRIMARY_FORM_UNCERTAIN');
     }
 
     // Generate fallback retargeting data

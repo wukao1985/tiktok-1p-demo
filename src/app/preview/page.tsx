@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation';
 import {
   AnalyzeResponseData,
   ExtractedField,
+  FormBoundingBox,
   GeneratedCopy,
   Industry,
   JourneyStep,
@@ -105,6 +106,18 @@ function getStepTypeColor(stepType: JourneyStep['stepType']) {
     default:
       return 'bg-zinc-500/20 text-zinc-400';
   }
+}
+
+function getOverlayStyle(
+  formBoundingBox: FormBoundingBox,
+  imageDimensions: { width: number; height: number }
+) {
+  return {
+    left: `${(formBoundingBox.x / imageDimensions.width) * 100}%`,
+    top: `${(formBoundingBox.y / imageDimensions.height) * 100}%`,
+    width: `${(formBoundingBox.width / imageDimensions.width) * 100}%`,
+    height: `${(formBoundingBox.height / imageDimensions.height) * 100}%`,
+  };
 }
 
 function PhonePreview({
@@ -232,6 +245,7 @@ function PreviewContent() {
   const [selectedTone, setSelectedTone] = useState<Tone>('urgent');
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  const [activeScreenshotDimensions, setActiveScreenshotDimensions] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     if (!aid) {
@@ -263,6 +277,10 @@ function PreviewContent() {
 
     fetchAnalysis();
   }, [aid]);
+
+  useEffect(() => {
+    setActiveScreenshotDimensions(null);
+  }, [data?.analysisId, activeStep]);
 
   const handleShare = async () => {
     try {
@@ -400,6 +418,13 @@ function PreviewContent() {
   const activeScreenshotSrc = activeStepData?.screenshotUrl
     || (activeStepData?.screenshotBase64 ? `data:image/png;base64,${activeStepData.screenshotBase64}` : undefined)
     || (activeStep === 1 ? screenshot.url : undefined);
+  const shouldShowFormOverlay = Boolean(
+    activeStepData?.stepNumber === 1 &&
+    activeScreenshotSrc &&
+    activeScreenshotDimensions &&
+    data.formBoundingBox.width > 0 &&
+    data.formBoundingBox.height > 0
+  );
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -525,20 +550,43 @@ function PreviewContent() {
                     </div>
                   </div>
 
-                  <div className="aspect-video bg-zinc-950 overflow-auto border-b border-zinc-800">
+                  <div className="max-h-[70vh] bg-zinc-950 overflow-auto border-b border-zinc-800">
                     {activeScreenshotSrc ? (
-                      <>
+                      <div className="p-3">
+                        <div
+                          className="relative mx-auto"
+                          style={{ width: `${screenshotZoom * 100}%` }}
+                        >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={activeScreenshotSrc}
                           alt={`Step ${activeStepData.stepNumber}`}
-                          className="w-full h-full object-cover object-top transition-transform duration-200"
-                          style={{ transform: `scale(${screenshotZoom})`, transformOrigin: 'top center' }}
+                          className="block w-full h-auto"
+                          onLoad={(event) => {
+                            setActiveScreenshotDimensions({
+                              width: event.currentTarget.naturalWidth,
+                              height: event.currentTarget.naturalHeight,
+                            });
+                          }}
                         />
-                      </>
+                          {shouldShowFormOverlay && activeScreenshotDimensions && (
+                            <div
+                              className="pointer-events-none absolute rounded-xl border-2 border-cyan-300 bg-cyan-300/15 shadow-[0_0_0_1px_rgba(34,211,238,0.25)]"
+                              style={getOverlayStyle(data.formBoundingBox, activeScreenshotDimensions)}
+                            >
+                              <span className="absolute left-2 top-2 rounded-full bg-cyan-300 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-black">
+                                Primary form
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     ) : (
                       <div className="w-full h-full bg-white p-4 overflow-auto">
                         <div className="max-w-sm mx-auto space-y-3">
+                          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                            Screenshot unavailable - showing placeholder
+                          </div>
                           <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
                             {activeStepData.title}
                           </div>
