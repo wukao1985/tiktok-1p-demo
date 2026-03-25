@@ -10,7 +10,7 @@ import {
 } from '@/types';
 
 const VERTEX_AI_API_KEY =
-  process.env.VERTEX_AI_API_KEY || 'AQ.Ab8RN6KJK9L-sR2FIEXMQuMp8Tcco4Y4ybKrTPQa--nRQsp32A';
+  process.env.VERTEX_AI_API_KEY || '';
 const VERTEX_PROJECT =
   process.env.VERTEX_PROJECT || 'focal-welder-485422-s2';
 const VERTEX_LOCATION =
@@ -57,6 +57,12 @@ interface GeminiResponse {
 
 function getVertexEndpoint() {
   return `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/gemini-2.0-flash:generateContent?key=${VERTEX_AI_API_KEY}`;
+}
+
+function assertVertexApiKey() {
+  if (!VERTEX_AI_API_KEY) {
+    throw new Error('VERTEX_AI_API_KEY not configured');
+  }
 }
 
 const ANALYSIS_PROMPT = `You are an expert web form analyzer and TikTok ads copywriter. Extract structured form field data from the provided multi-step HTML journey AND generate optimized copy in a single response.
@@ -211,6 +217,8 @@ export async function analyzeWithGemini(
   screenshotBase64?: string,
   url?: string
 ): Promise<Partial<AnalyzeResponseData>> {
+  assertVertexApiKey();
+
   try {
     const content: VertexPart[] = [
       {
@@ -274,6 +282,8 @@ export async function analyzeWithGemini(
 export async function generateCopyWithGemini(
   context: GenerateRequest['context']
 ): Promise<GenerateResponse> {
+  assertVertexApiKey();
+
   const prompt = `${COPY_GENERATION_PROMPT}\n\nContext:\n${JSON.stringify(context, null, 2)}`;
   const text = await callVertex([{ text: prompt }], 5000);
   const result = parseJsonResponse<GenerateResponse>(text);

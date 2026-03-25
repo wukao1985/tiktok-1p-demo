@@ -461,6 +461,15 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
       throw new Error('NO_FORM_DETECTED');
     }
 
+    // Check form confidence — if primary form is weak or too close to runner-up, signal uncertainty
+    const formScore = (geminiResult as Record<string, unknown>).formConfidence as number ?? 100;
+    if (formScore < 40) {
+      throw new Error('NO_FORM_DETECTED');
+    }
+    if (formScore < 60) {
+      throw new Error('PRIMARY_FORM_UNCERTAIN');
+    }
+
     // Generate fallback retargeting data
     const totalStarts = 1247;
     const totalAbandonments = 412;

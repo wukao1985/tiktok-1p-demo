@@ -120,7 +120,7 @@ export default function Home() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!url.trim() || isLoading) return;
-    handleAnalyze(url.trim());
+    router.push(`/analyze?url=${encodeURIComponent(url.trim())}`);
   };
 
   const handleDemoSelect = (demo: 'sonobello' | 'opendoor') => {
@@ -128,8 +128,7 @@ export default function Home() {
       sonobello: 'https://www.sonobello.com/consultation/',
       opendoor: 'https://www.opendoor.com'
     };
-    setUrl(demoUrls[demo]);
-    handleAnalyze(demoUrls[demo]);
+    router.push(`/analyze?url=${encodeURIComponent(demoUrls[demo])}`);
   };
 
   const handleUseDemoData = () => {

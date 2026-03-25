@@ -12,8 +12,6 @@ export const maxDuration = 60;
 
 const ANALYSIS_TTL_SECONDS = Number.parseInt(process.env.ANALYSIS_TTL_SECONDS || '300', 10);
 const DEMO_TTL_SECONDS = 3600;
-const PLACEHOLDER_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
 function normalizeUrl(url: string) {
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -65,6 +63,11 @@ function getDemoPayload(url: string) {
 }
 
 function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
+  const screenshotUrl =
+    data.screenshot.status === 'ok' && data.screenshot.url?.startsWith('/api/screenshot')
+      ? `/api/screenshot?id=${analysisId}`
+      : data.screenshot.url;
+
   return {
     ...data,
     analysisId,
@@ -72,7 +75,7 @@ function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
     screenshot: data.screenshot.status === 'ok'
       ? {
           ...data.screenshot,
-          url: `/api/screenshot?id=${analysisId}`,
+          url: screenshotUrl,
         }
       : data.screenshot,
   };
@@ -94,25 +97,30 @@ async function storeDemoPayload(data: AnalyzeResponseData) {
   try {
     await storeAnalysis(data, DEMO_TTL_SECONDS);
   } catch {}
-
-  try {
-    await storeScreenshot(data.analysisId, PLACEHOLDER_PNG_BASE64, DEMO_TTL_SECONDS);
-  } catch {}
 }
 
 async function storeLiveArtifacts(data: AnalyzeResponseData) {
-  try {
-    await storeAnalysis(data, ANALYSIS_TTL_SECONDS);
-  } catch (error) {
-    console.error('KV write error:', error);
-  }
+  await storeAnalysis(data, ANALYSIS_TTL_SECONDS);
 
-  try {
-    const primaryScreenshot = data.journey[0]?.screenshotBase64;
-    await storeScreenshot(data.analysisId, primaryScreenshot, ANALYSIS_TTL_SECONDS);
-  } catch (error) {
-    console.error('Screenshot KV write error:', error);
-  }
+  const primaryScreenshot = data.journey[0]?.screenshotBase64;
+  await storeScreenshot(data.analysisId, primaryScreenshot, ANALYSIS_TTL_SECONDS);
+}
+
+function kvWriteErrorResponse(requestId: string, headers: Record<string, string>) {
+  return jsonResponse(
+    {
+      success: false,
+      error: {
+        code: 'KV_WRITE_ERROR',
+        message: 'Failed to persist analysis',
+        retryable: true,
+      },
+      requestId,
+      timestamp: new Date().toISOString(),
+    },
+    { status: 503 },
+    headers
+  );
 }
 
 function mapAnalyzeError(errorMessage: string): {
@@ -142,6 +150,18 @@ function mapAnalyzeError(errorMessage: string): {
       error: {
         code: 'PRIMARY_FORM_UNCERTAIN',
         message: 'Unable to confidently identify the primary form on this page',
+        retryable: false,
+      },
+      headers: {},
+    };
+  }
+
+  if (errorMessage === 'VERTEX_AI_API_KEY not configured') {
+    return {
+      status: 503,
+      error: {
+        code: 'AI_UNAVAILABLE',
+        message: 'VERTEX_AI_API_KEY not configured',
         retryable: false,
       },
       headers: {},
@@ -296,7 +316,12 @@ export async function POST(request: NextRequest) {
       clearTimeout(timeoutId);
 
       const result = analysis as AnalyzeResponseData;
-      await storeLiveArtifacts(result);
+      try {
+        await storeLiveArtifacts(result);
+      } catch (kvError) {
+        console.error('KV write error:', kvError);
+        return kvWriteErrorResponse(requestId, rateLimitHeaders);
+      }
 
       return jsonResponse(
         {
@@ -322,7 +347,12 @@ export async function POST(request: NextRequest) {
           `aid_${uuidv4().slice(0, 16)}`
         );
 
-        await storeLiveArtifacts(fallbackData);
+        try {
+          await storeLiveArtifacts(fallbackData);
+        } catch (kvError) {
+          console.error('KV write error:', kvError);
+          return kvWriteErrorResponse(requestId, rateLimitHeaders);
+        }
 
         return jsonResponse(
           {
@@ -395,19 +425,6 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const stored = await kv.get<string | AnalyzeResponseData>(`analysis:${aid}`);
-
-    if (stored) {
-      const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
-
-      return NextResponse.json({
-        success: true,
-        data,
-        requestId,
-        latencyMs: 0,
-      });
-    }
-
     if (aid === 'demo_sonobello') {
       return NextResponse.json({
         success: true,
@@ -421,6 +438,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({
         success: true,
         data: OPENDOOR_DEMO,
+        requestId,
+        latencyMs: 0,
+      });
+    }
+
+    const stored = await kv.get<string | AnalyzeResponseData>(`analysis:${aid}`);
+
+    if (stored) {
+      const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
+
+      return NextResponse.json({
+        success: true,
+        data,
         requestId,
         latencyMs: 0,
       });
