@@ -25,12 +25,74 @@ const CTA_KEYWORDS = [
 ];
 
 const NEXT_KEYWORDS = ['next', 'continue', 'proceed', 'step', 'forward'];
+const BOT_BLOCK_KEYWORDS = [
+  'captcha',
+  'verify you are human',
+  'verify you\'re human',
+  'access denied',
+  'temporarily blocked',
+  'bot detection',
+  'unusual traffic',
+  'security check',
+  'blocked',
+];
+const JOURNEY_TIMEOUT = 6000;
+const NAV_TIMEOUT = 3000;
+const SCREENSHOT_TIMEOUT = 2000;
 
 function isConfirmationUrl(url: string): boolean {
   const lowerUrl = url.toLowerCase();
   return ['thank', 'confirm', 'success', 'complete', 'done'].some(keyword =>
     lowerUrl.includes(keyword)
   );
+}
+
+function getRemainingBudget(startTime: number, bufferMs = 0) {
+  return JOURNEY_TIMEOUT - (Date.now() - startTime) - bufferMs;
+}
+
+function getBoundedTimeout(startTime: number, maxTimeoutMs: number, bufferMs = 0) {
+  return Math.min(maxTimeoutMs, Math.max(0, getRemainingBudget(startTime, bufferMs)));
+}
+
+async function detectBotProtection(page: Page) {
+  const pageText = await page.evaluate(() => {
+    return `${document.title}\n${document.body?.innerText || ''}`.toLowerCase();
+  });
+
+  return BOT_BLOCK_KEYWORDS.some((keyword) => pageText.includes(keyword));
+}
+
+async function takeScreenshotWithBudget(page: Page, startTime: number) {
+  const timeoutMs = getBoundedTimeout(startTime, SCREENSHOT_TIMEOUT, 250);
+  if (timeoutMs <= 0) {
+    return {
+      screenshotBase64: null,
+      screenshotStatus: 'failed' as ScreenshotAsset['status'],
+    };
+  }
+
+  try {
+    const screenshotPromise = page.screenshot({
+      type: 'png',
+      fullPage: false,
+      encoding: 'base64',
+    });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Screenshot timeout')), timeoutMs)
+    );
+    const screenshotBase64 = await Promise.race([screenshotPromise, timeoutPromise]) as string;
+
+    return {
+      screenshotBase64,
+      screenshotStatus: 'ok' as ScreenshotAsset['status'],
+    };
+  } catch {
+    return {
+      screenshotBase64: null,
+      screenshotStatus: 'failed' as ScreenshotAsset['status'],
+    };
+  }
 }
 
 async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
@@ -149,9 +211,6 @@ async function findCTAButton(page: Page): Promise<{ element: ElementHandle<Eleme
 async function scrapeJourney(url: string, startTime: number): Promise<ScrapedStep[]> {
   const steps: ScrapedStep[] = [];
   let browser = null;
-  const JOURNEY_TIMEOUT = 6000; // 6s total budget
-  const NAV_TIMEOUT = 1500;     // 1.5s per navigation
-  const SCREENSHOT_TIMEOUT = 500; // 0.5s per screenshot
 
   try {
     // Launch browser with @sparticuz/chromium for serverless compatibility
@@ -171,12 +230,21 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
 
     // Step 1: Land on the page
     try {
+      const navigationTimeout = getBoundedTimeout(startTime, NAV_TIMEOUT, 2000);
+      if (navigationTimeout <= 0) {
+        return steps;
+      }
+
       await page.goto(url, {
         waitUntil: 'networkidle2',
-        timeout: NAV_TIMEOUT
+        timeout: navigationTimeout
       });
-    } catch (e) {
+    } catch {
       // Continue even if navigation times out
+    }
+
+    if (await detectBotProtection(page)) {
+      throw new Error('bot blocked');
     }
 
     // Handle consent banners
@@ -201,23 +269,10 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     const step1Fields = await extractFieldsFromPage(page);
     const step1Title = await page.evaluate(() => document.title);
     const step1Url = page.url();
-
-    let step1Screenshot: string | null = null;
-    let step1ScreenshotStatus: ScreenshotAsset['status'] = 'failed';
-    try {
-      const screenshotPromise = page.screenshot({
-        type: 'png',
-        fullPage: false,
-        encoding: 'base64'
-      });
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Screenshot timeout')), SCREENSHOT_TIMEOUT)
-      );
-      step1Screenshot = await Promise.race([screenshotPromise, timeoutPromise]) as string;
-      step1ScreenshotStatus = 'ok';
-    } catch {
-      step1ScreenshotStatus = 'failed';
-    }
+    const {
+      screenshotBase64: step1Screenshot,
+      screenshotStatus: step1ScreenshotStatus,
+    } = await takeScreenshotWithBudget(page, startTime);
 
     // Find CTA on step 1
     const { element: ctaButton, text: ctaText } = await findCTAButton(page);
@@ -234,15 +289,18 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
     });
 
     // Check timeout
-    if (Date.now() - startTime > JOURNEY_TIMEOUT - 2000) {
+    if (getRemainingBudget(startTime, 2000) <= 0) {
       return steps;
     }
 
-    // Step 2: Click CTA if no form fields on step 1
-    if (step1Fields.length === 0 && ctaButton) {
+    // Step 2: Always attempt the primary CTA to discover subsequent steps.
+    if (ctaButton) {
       try {
         await ctaButton.click();
-        await new Promise(r => setTimeout(r, 1000)); // Wait for navigation/modal
+        const postClickWait = getBoundedTimeout(startTime, 1000, 1000);
+        if (postClickWait > 0) {
+          await new Promise((resolve) => setTimeout(resolve, postClickWait));
+        }
 
         // Check if URL changed (navigation) or modal appeared
         const step2Url = page.url();
@@ -251,26 +309,17 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
           return !!modal;
         });
 
+        if (await detectBotProtection(page)) {
+          throw new Error('bot blocked');
+        }
+
         if (step2Url !== step1Url || hasModal) {
           const step2Fields = await extractFieldsFromPage(page);
           const step2Title = await page.evaluate(() => document.title);
-
-          let step2Screenshot: string | null = null;
-          let step2ScreenshotStatus: ScreenshotAsset['status'] = 'failed';
-          try {
-            const screenshotPromise = page.screenshot({
-              type: 'png',
-              fullPage: false,
-              encoding: 'base64'
-            });
-            const timeoutPromise = new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Screenshot timeout')), SCREENSHOT_TIMEOUT)
-            );
-            step2Screenshot = await Promise.race([screenshotPromise, timeoutPromise]) as string;
-            step2ScreenshotStatus = 'ok';
-          } catch {
-            step2ScreenshotStatus = 'failed';
-          }
+          const {
+            screenshotBase64: step2Screenshot,
+            screenshotStatus: step2ScreenshotStatus,
+          } = await takeScreenshotWithBudget(page, startTime);
 
           // Check for multi-step indicators
           const hasNextButton = await page.evaluate(() => {
@@ -290,6 +339,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
             screenshotBase64: step2Screenshot,
             screenshotStatus: step2ScreenshotStatus,
             fields: step2Fields,
+            ctaText: ctaText || undefined,
             stepType
           });
 
@@ -297,7 +347,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
           let subStepCount = 0;
           const maxSubSteps = 4;
 
-          while (subStepCount < maxSubSteps && (Date.now() - startTime) < JOURNEY_TIMEOUT - 1500) {
+          while (subStepCount < maxSubSteps && getRemainingBudget(startTime, 1500) > 0) {
             const { element: nextButton } = await findCTAButton(page);
             if (!nextButton) break;
 
@@ -305,7 +355,14 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
             if (!NEXT_KEYWORDS.some(k => nextText.includes(k))) break;
 
             await nextButton.click();
-            await new Promise(r => setTimeout(r, 800));
+            const subStepWait = getBoundedTimeout(startTime, 800, 800);
+            if (subStepWait > 0) {
+              await new Promise((resolve) => setTimeout(resolve, subStepWait));
+            }
+
+            if (await detectBotProtection(page)) {
+              throw new Error('bot blocked');
+            }
 
             // Check for confirmation page
             const currentUrl = page.url();
@@ -325,22 +382,10 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
 
             const stepFields = await extractFieldsFromPage(page);
             if (stepFields.length > 0) {
-              let stepScreenshot: string | null = null;
-              let stepScreenshotStatus: ScreenshotAsset['status'] = 'failed';
-              try {
-                const screenshotPromise = page.screenshot({
-                  type: 'png',
-                  fullPage: false,
-                  encoding: 'base64'
-                });
-                const timeoutPromise = new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error('Screenshot timeout')), SCREENSHOT_TIMEOUT)
-                );
-                stepScreenshot = await Promise.race([screenshotPromise, timeoutPromise]) as string;
-                stepScreenshotStatus = 'ok';
-              } catch {
-                stepScreenshotStatus = 'failed';
-              }
+              const {
+                screenshotBase64: stepScreenshot,
+                screenshotStatus: stepScreenshotStatus,
+              } = await takeScreenshotWithBudget(page, startTime);
 
               steps.push({
                 html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
@@ -356,7 +401,7 @@ async function scrapeJourney(url: string, startTime: number): Promise<ScrapedSte
             subStepCount++;
           }
         }
-      } catch (e) {
+      } catch {
         // Continue with what we have
       }
     }
@@ -411,6 +456,10 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
     const extractedFields = (geminiResult.extractedFields && geminiResult.extractedFields.length > 0)
       ? geminiResult.extractedFields
       : deduplicatedFields;
+
+    if (extractedFields.length === 0) {
+      throw new Error('NO_FORM_DETECTED');
+    }
 
     // Generate fallback retargeting data
     const totalStarts = 1247;

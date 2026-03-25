@@ -1,26 +1,29 @@
-// app/api/analyze/route.ts
-
 import { NextRequest, NextResponse } from 'next/server';
 import { kv } from '@vercel/kv';
-import { analyzePage } from '@/lib/analyze-page';
-import { getFallbackData, SONO_BELLO_DEMO, OPENDOOR_DEMO } from '@/lib/demo-data';
-import { AnalyzeResponseData, ApiError } from '@/types';
 import { v4 as uuidv4 } from 'uuid';
 
-// Route config for Vercel
+import { analyzePage } from '@/lib/analyze-page';
+import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
+import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import { AnalyzeResponseData } from '@/types';
+
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-// Helper to normalize URL
-function normalizeUrl(url: string): string {
+const ANALYSIS_TTL_SECONDS = Number.parseInt(process.env.ANALYSIS_TTL_SECONDS || '300', 10);
+const DEMO_TTL_SECONDS = 3600;
+const PLACEHOLDER_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+function normalizeUrl(url: string) {
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return `https://${url}`;
   }
+
   return url;
 }
 
-// Helper to validate URL
-function isValidUrl(url: string): boolean {
+function isValidUrl(url: string) {
   try {
     new URL(normalizeUrl(url));
     return true;
@@ -29,212 +32,347 @@ function isValidUrl(url: string): boolean {
   }
 }
 
-// POST /api/analyze
+function jsonResponse(
+  payload: unknown,
+  init: ResponseInit = {},
+  headers: Record<string, string> = {}
+) {
+  return NextResponse.json(payload, {
+    ...init,
+    headers: {
+      ...headers,
+      ...(init.headers || {}),
+    },
+  });
+}
+
+function getDemoPayload(url: string) {
+  const lowerUrl = url.toLowerCase();
+
+  if (lowerUrl.includes('opendoor.com')) {
+    return {
+      ...OPENDOOR_DEMO,
+      landingPageUrl: url,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  return {
+    ...SONO_BELLO_DEMO,
+    landingPageUrl: url,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
+  return {
+    ...data,
+    analysisId,
+    createdAt: new Date().toISOString(),
+    screenshot: data.screenshot.status === 'ok'
+      ? {
+          ...data.screenshot,
+          url: `/api/screenshot?id=${analysisId}`,
+        }
+      : data.screenshot,
+  };
+}
+
+async function storeAnalysis(data: AnalyzeResponseData, ttlSeconds: number) {
+  await kv.set(`analysis:${data.analysisId}`, JSON.stringify(data), { ex: ttlSeconds });
+}
+
+async function storeScreenshot(analysisId: string, screenshotBase64: string | null | undefined, ttlSeconds: number) {
+  if (!screenshotBase64) {
+    return;
+  }
+
+  await kv.set(`screenshot:${analysisId}`, screenshotBase64, { ex: ttlSeconds });
+}
+
+async function storeDemoPayload(data: AnalyzeResponseData) {
+  try {
+    await storeAnalysis(data, DEMO_TTL_SECONDS);
+  } catch {}
+
+  try {
+    await storeScreenshot(data.analysisId, PLACEHOLDER_PNG_BASE64, DEMO_TTL_SECONDS);
+  } catch {}
+}
+
+async function storeLiveArtifacts(data: AnalyzeResponseData) {
+  try {
+    await storeAnalysis(data, ANALYSIS_TTL_SECONDS);
+  } catch (error) {
+    console.error('KV write error:', error);
+  }
+
+  try {
+    const primaryScreenshot = data.journey[0]?.screenshotBase64;
+    await storeScreenshot(data.analysisId, primaryScreenshot, ANALYSIS_TTL_SECONDS);
+  } catch (error) {
+    console.error('Screenshot KV write error:', error);
+  }
+}
+
+function mapAnalyzeError(errorMessage: string): {
+  status: number;
+  error: {
+    code: string;
+    message: string;
+    retryable: boolean;
+  };
+  headers: Record<string, string>;
+} {
+  if (errorMessage === 'NO_FORM_DETECTED') {
+    return {
+      status: 422,
+      error: {
+        code: 'NO_FORM_DETECTED',
+        message: 'No form found on this page',
+        retryable: false,
+      },
+      headers: {},
+    };
+  }
+
+  if (errorMessage === 'PRIMARY_FORM_UNCERTAIN') {
+    return {
+      status: 422,
+      error: {
+        code: 'PRIMARY_FORM_UNCERTAIN',
+        message: 'Unable to confidently identify the primary form on this page',
+        retryable: false,
+      },
+      headers: {},
+    };
+  }
+
+  if (/bot|blocked/i.test(errorMessage)) {
+    return {
+      status: 422,
+      error: {
+        code: 'SCRAPING_BLOCKED',
+        message: 'Target site blocks automated access',
+        retryable: false,
+      },
+      headers: {
+        'X-Error-Source': 'scraper',
+      },
+    };
+  }
+
+  if (/404|dns|enotfound|err_name_not_resolved/i.test(errorMessage)) {
+    return {
+      status: 422,
+      error: {
+        code: 'PAGE_NOT_FOUND',
+        message: 'URL returned 404 or could not be resolved',
+        retryable: false,
+      },
+      headers: {},
+    };
+  }
+
+  if (/llm|vertex|gemini|unexpected response format/i.test(errorMessage)) {
+    return {
+      status: 503,
+      error: {
+        code: 'LLM_ERROR',
+        message: 'Gemini API error or malformed JSON',
+        retryable: true,
+      },
+      headers: {},
+    };
+  }
+
+  return {
+    status: 422,
+    error: {
+      code: 'SCRAPING_BLOCKED',
+      message: errorMessage || 'Target site blocks automated access',
+      retryable: false,
+    },
+    headers: {},
+  };
+}
+
 export async function POST(request: NextRequest) {
   const requestId = `req_${uuidv4().slice(0, 8)}`;
   const startTime = Date.now();
-
-  // 8s global timeout
+  const rateLimit = await checkRateLimit(request);
+  const rateLimitHeaders = getRateLimitHeaders(rateLimit);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
+  if (rateLimit.limited) {
+    return jsonResponse(
+      {
+        success: false,
+        error: {
+          code: 'RATE_LIMITED',
+          message: `Rate limit exceeded. Try again in ${rateLimit.retryAfter} seconds.`,
+          retryable: true,
+        },
+        requestId,
+        timestamp: new Date().toISOString(),
+      },
+      { status: 429 },
+      rateLimitHeaders
+    );
+  }
+
   try {
     const body = await request.json();
-    const { url } = body;
+    const { url } = body as { url?: string };
 
     if (!url) {
-      return NextResponse.json(
+      return jsonResponse(
         {
           success: false,
           error: {
             code: 'MISSING_URL',
             message: 'Request body missing url field',
-            retryable: false
+            retryable: false,
           },
           requestId,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        { status: 400 }
+        { status: 400 },
+        rateLimitHeaders
       );
     }
 
     if (!isValidUrl(url)) {
-      return NextResponse.json(
+      return jsonResponse(
         {
           success: false,
           error: {
             code: 'INVALID_URL',
             message: 'URL format not recognized',
-            retryable: false
+            retryable: false,
           },
           requestId,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        { status: 400 }
+        { status: 400 },
+        rateLimitHeaders
       );
     }
 
     const normalizedUrl = normalizeUrl(url);
-
-    // Check for demo URLs — return stable demo aid immediately (no KV needed)
     const lowerUrl = normalizedUrl.toLowerCase();
     const isSonoBello = lowerUrl.includes('sonobello.com');
     const isOpendoor = lowerUrl.includes('opendoor.com');
+    const useDemoMode = rateLimit.forceDemoMode || isSonoBello || isOpendoor;
 
-    if (isSonoBello) {
+    if (useDemoMode) {
       clearTimeout(timeoutId);
-      return NextResponse.json({ success: true, data: { ...SONO_BELLO_DEMO, analysisId: 'demo_sonobello' }, requestId, latencyMs: Date.now() - startTime });
-    }
-    if (isOpendoor) {
-      clearTimeout(timeoutId);
-      return NextResponse.json({ success: true, data: { ...OPENDOOR_DEMO, analysisId: 'demo_opendoor' }, requestId, latencyMs: Date.now() - startTime });
+      const demoData = getDemoPayload(normalizedUrl);
+      await storeDemoPayload(demoData);
+
+      return jsonResponse(
+        {
+          success: true,
+          data: demoData,
+          requestId,
+          latencyMs: Date.now() - startTime,
+        },
+        { status: 200 },
+        rateLimitHeaders
+      );
     }
 
     try {
-      // Attempt live analysis
       const analysis = await Promise.race([
         analyzePage(normalizedUrl),
         new Promise<never>((_, reject) => {
           controller.signal.addEventListener('abort', () => {
             reject(new Error('TIMEOUT'));
           });
-        })
+        }),
       ]);
 
       clearTimeout(timeoutId);
 
       const result = analysis as AnalyzeResponseData;
+      await storeLiveArtifacts(result);
 
-      // Store in KV
-      try {
-        await kv.set(`analysis:${result.analysisId}`, JSON.stringify(result), { ex: 300 }); // 5 min TTL
-      } catch (kvError) {
-        console.error('KV write error:', kvError);
-        // Continue - we still return the result even if KV fails
-      }
-
-      const latencyMs = Date.now() - startTime;
-
-      return NextResponse.json({
-        success: true,
-        data: result,
-        requestId,
-        latencyMs
-      });
+      return jsonResponse(
+        {
+          success: true,
+          data: result,
+          requestId,
+          latencyMs: Date.now() - startTime,
+        },
+        { status: 200 },
+        rateLimitHeaders
+      );
     } catch (error) {
       clearTimeout(timeoutId);
 
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // Handle timeout - return simulated data with fallbackReason
       if (errorMessage === 'TIMEOUT' || controller.signal.aborted) {
-        const fallbackData = getFallbackData(normalizedUrl);
-        fallbackData.analysisId = `aid_${uuidv4().slice(0, 16)}`;
-        fallbackData.createdAt = new Date().toISOString();
+        const fallbackData = withAnalysisId(
+          {
+            ...getFallbackData(normalizedUrl),
+            landingPageUrl: normalizedUrl,
+          },
+          `aid_${uuidv4().slice(0, 16)}`
+        );
 
-        // Store in KV
-        try {
-          await kv.set(`analysis:${fallbackData.analysisId}`, JSON.stringify(fallbackData), { ex: 300 });
-        } catch (kvError) {
-          console.error('KV write error:', kvError);
-        }
+        await storeLiveArtifacts(fallbackData);
 
-        return NextResponse.json({
-          success: true,
-          data: fallbackData,
-          fallbackReason: 'timeout',
-          requestId,
-          latencyMs: Date.now() - startTime
-        });
+        return jsonResponse(
+          {
+            success: true,
+            data: fallbackData,
+            fallbackReason: 'timeout',
+            requestId,
+            latencyMs: Date.now() - startTime,
+          },
+          { status: 200 },
+          rateLimitHeaders
+        );
       }
 
-      // For demo URLs, return specific fallback data
-      if (isSonoBello) {
-        const demoData = { ...SONO_BELLO_DEMO };
-        demoData.analysisId = `aid_${uuidv4().slice(0, 16)}`;
-        demoData.createdAt = new Date().toISOString();
+      const mapped = mapAnalyzeError(errorMessage);
 
-        try {
-          await kv.set(`analysis:${demoData.analysisId}`, JSON.stringify(demoData), { ex: 300 });
-        } catch (kvError) {
-          console.error('KV write error:', kvError);
-        }
-
-        return NextResponse.json({
-          success: true,
-          data: demoData,
-          requestId,
-          latencyMs: Date.now() - startTime
-        });
-      }
-
-      if (isOpendoor) {
-        const demoData = { ...OPENDOOR_DEMO };
-        demoData.analysisId = `aid_${uuidv4().slice(0, 16)}`;
-        demoData.createdAt = new Date().toISOString();
-
-        try {
-          await kv.set(`analysis:${demoData.analysisId}`, JSON.stringify(demoData), { ex: 300 });
-        } catch (kvError) {
-          console.error('KV write error:', kvError);
-        }
-
-        return NextResponse.json({
-          success: true,
-          data: demoData,
-          requestId,
-          latencyMs: Date.now() - startTime
-        });
-      }
-
-      // Return error with fallback available
-      let errorCode = 'SCRAPING_BLOCKED';
-      let statusCode = 422;
-
-      if (errorMessage.includes('404')) {
-        errorCode = 'PAGE_NOT_FOUND';
-      } else if (errorMessage.includes('LLM')) {
-        errorCode = 'LLM_ERROR';
-        statusCode = 503;
-      }
-
-      return NextResponse.json(
+      return jsonResponse(
         {
           success: false,
-          error: {
-            code: errorCode,
-            message: errorMessage,
-            retryable: statusCode === 503
-          },
+          error: mapped.error,
           fallbackAvailable: true,
           requestId,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
         },
-        { status: statusCode }
+        { status: mapped.status, headers: mapped.headers },
+        rateLimitHeaders
       );
     }
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Unexpected error:', error);
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         success: false,
         error: {
           code: 'INTERNAL_ERROR',
           message: 'An unexpected error occurred',
-          retryable: true
+          retryable: true,
         },
         fallbackAvailable: true,
         requestId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       },
-      { status: 503 }
+      { status: 503 },
+      rateLimitHeaders
     );
   }
 }
 
-// GET /api/analyze?aid={id}
 export async function GET(request: NextRequest) {
   const requestId = `req_${uuidv4().slice(0, 8)}`;
   const { searchParams } = new URL(request.url);
@@ -247,57 +385,65 @@ export async function GET(request: NextRequest) {
         error: {
           code: 'MISSING_AID',
           message: "Query parameter 'aid' is required",
-          retryable: false
+          retryable: false,
         },
         requestId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       },
       { status: 400 }
     );
   }
 
-  // Special demo aids — return hardcoded fixtures without KV
-  if (aid === 'demo_sonobello') {
-    const demo = { ...SONO_BELLO_DEMO, analysisId: 'demo_sonobello' };
-    return NextResponse.json({ success: true, data: demo, requestId, latencyMs: 0 });
-  }
-  if (aid === 'demo_opendoor') {
-    const demo = { ...OPENDOOR_DEMO, analysisId: 'demo_opendoor' };
-    return NextResponse.json({ success: true, data: demo, requestId, latencyMs: 0 });
-  }
-
   try {
-    const data = await kv.get<string>(`analysis:${aid}`);
+    const stored = await kv.get<string | AnalyzeResponseData>(`analysis:${aid}`);
 
-    if (!data) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: {
-            code: 'ANALYSIS_NOT_FOUND',
-            message: 'No stored analysis found for analysis ID',
-            retryable: false
-          },
-          requestId,
-          timestamp: new Date().toISOString()
-        },
-        {
-          status: 404,
-          headers: {
-            'X-Analysis-Id': aid
-          }
-        }
-      );
+    if (stored) {
+      const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
+
+      return NextResponse.json({
+        success: true,
+        data,
+        requestId,
+        latencyMs: 0,
+      });
     }
 
-    const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
+    if (aid === 'demo_sonobello') {
+      return NextResponse.json({
+        success: true,
+        data: SONO_BELLO_DEMO,
+        requestId,
+        latencyMs: 0,
+      });
+    }
 
-    return NextResponse.json({
-      success: true,
-      data: parsedData,
-      requestId,
-      latencyMs: 0
-    });
+    if (aid === 'demo_opendoor') {
+      return NextResponse.json({
+        success: true,
+        data: OPENDOOR_DEMO,
+        requestId,
+        latencyMs: 0,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: {
+          code: 'ANALYSIS_NOT_FOUND',
+          message: 'No stored analysis found for analysis ID',
+          retryable: false,
+        },
+        requestId,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        status: 404,
+        headers: {
+          'X-Analysis-Id': aid,
+        },
+      }
+    );
   } catch (error) {
     console.error('KV read error:', error);
 
@@ -307,10 +453,10 @@ export async function GET(request: NextRequest) {
         error: {
           code: 'KV_READ_ERROR',
           message: 'Failed to retrieve analysis result',
-          retryable: true
+          retryable: true,
         },
         requestId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       },
       { status: 503 }
     );

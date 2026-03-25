@@ -3,7 +3,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { AnalyzeResponseData, FieldBreakdown } from '@/types';
+import { AnalyzeResponseData } from '@/types';
 import Link from 'next/link';
 
 const TIKTOK_TEAL = '#69C9D0';
@@ -68,7 +68,7 @@ function BonusContent() {
     );
   }
 
-  const { retargeting, isSimulatedData, brandColors, totalJourneySteps, performance } = data;
+  const { retargeting, totalJourneySteps } = data;
   const { totalFormStarts, totalAbandonments, fieldBreakdown, estimatedCtrLift } = retargeting;
 
   // Find the highest abandonment field
@@ -81,11 +81,6 @@ function BonusContent() {
       highestAbandonmentField = field;
     }
   });
-
-  // Calculate completion rate
-  const completionRate = totalFormStarts > 0
-    ? ((totalFormStarts - totalAbandonments) / totalFormStarts * 100).toFixed(1)
-    : '0';
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -105,12 +100,10 @@ function BonusContent() {
         </Link>
       </header>
 
-      {/* Simulated Data Banner */}
-      {isSimulatedData && (
-        <div className="w-full py-3 text-center text-sm font-bold text-black" style={{ backgroundColor: '#FFD700' }}>
-          SIMULATED DEMO DATA — FOR DEMONSTRATION PURPOSES ONLY
-        </div>
-      )}
+      {/* Retargeting metrics are always simulated for demo purposes. */}
+      <div className="w-full py-3 text-center text-sm font-bold text-black" style={{ backgroundColor: '#FFD700' }}>
+        SIMULATED DEMO DATA — FOR DEMONSTRATION PURPOSES ONLY
+      </div>
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-12">
@@ -212,7 +205,7 @@ function BonusContent() {
             <div className="text-4xl font-bold text-red-400">
               {totalAbandonments.toLocaleString()}
             </div>
-            <div className="text-zinc-500 text-sm mt-2">Users who didn't complete</div>
+            <div className="text-zinc-500 text-sm mt-2">Users who didn&apos;t complete</div>
           </div>
 
           {/* Estimated CTR Lift */}
@@ -289,10 +282,10 @@ function BonusContent() {
             <div>
               <h3 className="text-lg font-semibold mb-1">Auto-Created Retargeting Audience</h3>
               <p className="text-zinc-400 text-sm">
-                "High Intent - {highestAbandonmentField.charAt(0).toUpperCase() + highestAbandonmentField.slice(1)} Captured"
+                &ldquo;High Intent - {highestAbandonmentField.charAt(0).toUpperCase() + highestAbandonmentField.slice(1)} Captured&rdquo;
               </p>
               <p className="text-zinc-500 text-sm mt-1">
-                {highestAbandonmentCount.toLocaleString()} users who provided their {highestAbandonmentField} but didn't finish
+                {highestAbandonmentCount.toLocaleString()} users who provided their {highestAbandonmentField} but didn&apos;t finish
               </p>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500/10 border border-green-500/30">

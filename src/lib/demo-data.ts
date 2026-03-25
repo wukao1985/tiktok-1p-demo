@@ -3,11 +3,11 @@
 import { AnalyzeResponseData } from '@/types';
 
 export const SONO_BELLO_DEMO: AnalyzeResponseData = {
-  analysisId: 'aid_sonobello_fixture',
+  analysisId: 'demo_sonobello',
   landingPageUrl: 'https://www.sonobello.com/consultation/',
   screenshot: {
     status: 'ok',
-    url: '/api/screenshot?id=aid_sonobello_fixture'
+    url: '/api/screenshot?id=demo_sonobello'
   },
   isSimulatedData: true,
   createdAt: '2024-03-24T18:30:00Z',
@@ -119,7 +119,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.sonobello.com/consultation/',
       title: 'Sono Bello — Body Contouring & Liposuction',
-      screenshotUrl: '/sonobello-step1.png',
+      screenshotUrl: '/api/screenshot?id=demo_sonobello',
       fields: [],
       ctaText: 'See If You Qualify',
       stepType: 'landing'
@@ -206,11 +206,11 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
 };
 
 export const OPENDOOR_DEMO: AnalyzeResponseData = {
-  analysisId: 'aid_opendoor_fixture',
+  analysisId: 'demo_opendoor',
   landingPageUrl: 'https://www.opendoor.com',
   screenshot: {
     status: 'ok',
-    url: '/api/screenshot?id=aid_opendoor_fixture'
+    url: '/api/screenshot?id=demo_opendoor'
   },
   isSimulatedData: true,
   createdAt: '2024-03-24T18:30:00Z',
@@ -333,7 +333,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.opendoor.com',
       title: 'Opendoor — Sell Your Home',
-      screenshotUrl: '/opendoor-step1.png',
+      screenshotUrl: '/api/screenshot?id=demo_opendoor',
       fields: [],
       ctaText: 'Get Your Offer',
       stepType: 'landing'

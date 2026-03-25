@@ -1,9 +1,24 @@
 // lib/gemini.ts
 
-import { AnalyzeResponseData, ExtractedField, BrandColors, GeneratedCopy } from '@/types';
+import {
+  AnalyzeResponseData,
+  ExtractedField,
+  BrandColors,
+  GeneratedCopy,
+  GenerateRequest,
+  GenerateResponse,
+} from '@/types';
 
-const VERTEX_AI_API_KEY = process.env.VERTEX_AI_API_KEY || 'AQ.Ab8RN6KJK9L-sR2FIEXMQuMp8Tcco4Y4ybKrTPQa--nRQsp32A';
-const VERTEX_AI_ENDPOINT = `https://us-central1-aiplatform.googleapis.com/v1/projects/focal-welder-485422-s2/locations/us-central1/publishers/google/models/gemini-2.0-flash:generateContent?key=${VERTEX_AI_API_KEY}`;
+const VERTEX_AI_API_KEY =
+  process.env.VERTEX_AI_API_KEY || 'AQ.Ab8RN6KJK9L-sR2FIEXMQuMp8Tcco4Y4ybKrTPQa--nRQsp32A';
+const VERTEX_PROJECT =
+  process.env.VERTEX_PROJECT || 'focal-welder-485422-s2';
+const VERTEX_LOCATION =
+  process.env.VERTEX_LOCATION || 'us-central1';
+
+type VertexPart =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } };
 
 interface GeminiResponse {
   extractedFields: Array<{
@@ -38,6 +53,10 @@ interface GeminiResponse {
     explanation: string;
     disclaimerText?: string;
   };
+}
+
+function getVertexEndpoint() {
+  return `https://${VERTEX_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}/publishers/google/models/gemini-2.0-flash:generateContent?key=${VERTEX_AI_API_KEY}`;
 }
 
 const ANALYSIS_PROMPT = `You are an expert web form analyzer and TikTok ads copywriter. Extract structured form field data from the provided multi-step HTML journey AND generate optimized copy in a single response.
@@ -108,33 +127,42 @@ COMPLIANCE RULES:
 
 Return ONLY valid JSON. No markdown, no explanations outside the JSON.`;
 
-export async function analyzeWithGemini(
-  htmlContent: string,
-  screenshotBase64?: string,
-  url?: string
-): Promise<Partial<AnalyzeResponseData>> {
+const COPY_GENERATION_PROMPT = `You are an expert TikTok lead generation copywriter.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "tiktokHeadline": "Optimized TikTok headline (max 50 chars)",
+  "tiktokCta": "Optimized TikTok CTA (max 20 chars)",
+  "benefits": ["Benefit 1", "Benefit 2", "Benefit 3"],
+  "explanation": "Brief explanation of what changed and why",
+  "disclaimerText": "Optional disclaimer text"
+}
+
+Rules:
+- Respect the advertiser's industry and requested tone.
+- Use first-person CTA language when appropriate.
+- Medical aesthetics copy must avoid guaranteed outcomes and include: "Results may vary. Consultation required."
+- Real estate copy must avoid guaranteed offer claims and use "estimate" language.
+- Finance copy must avoid guaranteed approval or guaranteed rates.
+- Benefits should be punchy and 60 characters or fewer.
+- Headline should be specific, direct, and TikTok-friendly.`;
+
+function parseJsonResponse<T>(text: string): T {
+  const jsonMatch =
+    text.match(/```json\n([\s\S]*?)\n```/) ||
+    text.match(/```\n([\s\S]*?)\n```/) ||
+    [null, text];
+  const jsonString = jsonMatch[1] || text;
+
+  return JSON.parse(jsonString.trim()) as T;
+}
+
+async function callVertex(parts: VertexPart[], timeoutMs: number) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const content: Array<{ type: string; text?: string; inlineData?: { mimeType: string; data: string } }> = [
-      {
-        type: 'text',
-        text: `${ANALYSIS_PROMPT}\n\nURL: ${url || 'unknown'}\n\nHTML Content:\n${htmlContent.slice(0, 50000)}`
-      }
-    ];
-
-    if (screenshotBase64) {
-      content.push({
-        type: 'inlineData',
-        inlineData: {
-          mimeType: 'image/png',
-          data: screenshotBase64
-        }
-      });
-    }
-
-    const response = await fetch(VERTEX_AI_ENDPOINT, {
+    const response = await fetch(getVertexEndpoint(), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -143,38 +171,64 @@ export async function analyzeWithGemini(
         contents: [
           {
             role: 'user',
-            parts: content
-          }
+            parts,
+          },
         ],
         generationConfig: {
           temperature: 0.2,
           maxOutputTokens: 4096,
-          responseMimeType: 'application/json'
-        }
+          responseMimeType: 'application/json',
+        },
       }),
-      signal: controller.signal
+      signal: controller.signal,
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`Vertex AI API error: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    // Extract the JSON from the response
-    let parsedResult: GeminiResponse;
-
-    if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
-      const text = data.candidates[0].content.parts[0].text;
-      // Try to parse JSON from the text (handle markdown code blocks)
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```\n([\s\S]*?)\n```/) || [null, text];
-      const jsonString = jsonMatch[1] || text;
-      parsedResult = JSON.parse(jsonString.trim());
-    } else {
+    if (!text) {
       throw new Error('Unexpected response format from Vertex AI');
     }
+
+    return text as string;
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`LLM analysis timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function analyzeWithGemini(
+  htmlContent: string,
+  screenshotBase64?: string,
+  url?: string
+): Promise<Partial<AnalyzeResponseData>> {
+  try {
+    const content: VertexPart[] = [
+      {
+        text: `${ANALYSIS_PROMPT}\n\nURL: ${url || 'unknown'}\n\nHTML Content:\n${htmlContent.slice(0, 50000)}`,
+      },
+    ];
+
+    if (screenshotBase64) {
+      content.push({
+        inlineData: {
+          mimeType: 'image/png',
+          data: screenshotBase64,
+        },
+      });
+    }
+
+    const text = await callVertex(content, 5000);
+    const parsedResult = parseJsonResponse<GeminiResponse>(text);
 
     // Transform the response to match our types
     const extractedFields: ExtractedField[] = parsedResult.extractedFields.map(field => ({
@@ -213,10 +267,22 @@ export async function analyzeWithGemini(
       formBoundingBox: parsedResult.formBoundingBox
     };
   } catch (error) {
-    clearTimeout(timeoutId);
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('LLM analysis timed out after 5 seconds');
-    }
     throw error;
   }
+}
+
+export async function generateCopyWithGemini(
+  context: GenerateRequest['context']
+): Promise<GenerateResponse> {
+  const prompt = `${COPY_GENERATION_PROMPT}\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+  const text = await callVertex([{ text: prompt }], 5000);
+  const result = parseJsonResponse<GenerateResponse>(text);
+
+  return {
+    tiktokHeadline: result.tiktokHeadline,
+    tiktokCta: result.tiktokCta,
+    benefits: result.benefits,
+    explanation: result.explanation,
+    disclaimerText: result.disclaimerText,
+  };
 }

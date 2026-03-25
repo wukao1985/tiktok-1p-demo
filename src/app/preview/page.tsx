@@ -1,25 +1,237 @@
-// app/preview/page.tsx
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { AnalyzeResponseData, ExtractedField, JourneyStep } from '@/types';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+
+import {
+  AnalyzeResponseData,
+  ExtractedField,
+  GeneratedCopy,
+  Industry,
+  JourneyStep,
+  Tone,
+} from '@/types';
 
 const TIKTOK_TEAL = '#69C9D0';
 const TIKTOK_RED = '#FE2C55';
+const TONE_OPTIONS: Tone[] = ['urgent', 'friendly', 'professional', 'playful'];
+type PreviewTab = 'field-detection' | 'ai-copy' | 'performance';
+
+function TabButton({
+  label,
+  tab,
+  activeTab,
+  onClick,
+}: {
+  label: string;
+  tab: PreviewTab;
+  activeTab: PreviewTab;
+  onClick: (tab: PreviewTab) => void;
+}) {
+  const isActive = activeTab === tab;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(tab)}
+      className={`rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
+        isActive
+          ? 'border-zinc-900 text-white'
+          : 'border-zinc-300 text-zinc-600 hover:border-zinc-500 hover:text-zinc-900'
+      }`}
+      style={isActive ? { backgroundColor: TIKTOK_TEAL, borderColor: TIKTOK_TEAL } : undefined}
+    >
+      {label}
+    </button>
+  );
+}
+
+function FieldTypeBadge({ type }: { type: ExtractedField['tiktokFieldType'] }) {
+  return (
+    <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold text-teal-700">
+      {type}
+    </span>
+  );
+}
+
+function guessIndustry(url: string): Industry {
+  const lowerUrl = url.toLowerCase();
+
+  if (lowerUrl.includes('sonobello') || lowerUrl.includes('consultation') || lowerUrl.includes('clinic')) {
+    return 'medical_aesthetics';
+  }
+
+  if (lowerUrl.includes('opendoor') || lowerUrl.includes('property') || lowerUrl.includes('house')) {
+    return 'real_estate';
+  }
+
+  if (lowerUrl.includes('finance') || lowerUrl.includes('loan')) {
+    return 'finance';
+  }
+
+  if (lowerUrl.includes('fitness') || lowerUrl.includes('gym')) {
+    return 'fitness';
+  }
+
+  return 'education';
+}
+
+function getStepTypeLabel(stepType: JourneyStep['stepType']) {
+  switch (stepType) {
+    case 'landing':
+      return 'Landing';
+    case 'form':
+      return 'Form';
+    case 'multistep':
+      return 'Multi-step';
+    case 'confirmation':
+      return 'Complete';
+    default:
+      return 'Step';
+  }
+}
+
+function getStepTypeColor(stepType: JourneyStep['stepType']) {
+  switch (stepType) {
+    case 'landing':
+      return 'bg-blue-500/20 text-blue-400';
+    case 'form':
+      return 'bg-yellow-500/20 text-yellow-400';
+    case 'multistep':
+      return 'bg-orange-500/20 text-orange-400';
+    case 'confirmation':
+      return 'bg-green-500/20 text-green-400';
+    default:
+      return 'bg-zinc-500/20 text-zinc-400';
+  }
+}
+
+function PhonePreview({
+  brandName,
+  logoUrl,
+  primaryColor,
+  fields,
+  copy,
+  ctaSubmitted,
+  onSubmit,
+}: {
+  brandName: string;
+  logoUrl?: string;
+  primaryColor: string;
+  fields: ExtractedField[];
+  copy: GeneratedCopy;
+  ctaSubmitted: boolean;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="max-w-sm mx-auto">
+      <div className="bg-zinc-900 rounded-[2.5rem] p-3 border-4 border-zinc-800 shadow-2xl">
+        <div className="bg-white rounded-[2rem] overflow-hidden">
+          <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: primaryColor }}>
+            <div className="flex items-center gap-2">
+              {logoUrl ? (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={logoUrl} alt="Logo" className="w-6 h-6 rounded" />
+                </>
+              ) : (
+                <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center">
+                  <span className="text-xs font-bold text-white">{brandName.charAt(0)}</span>
+                </div>
+              )}
+              <span className="text-white text-sm font-medium truncate max-w-[120px]">
+                {brandName}
+              </span>
+            </div>
+            <div className="w-6 h-6 rounded-full bg-white/20" />
+          </div>
+
+          <div className="p-5 space-y-4">
+            <h3 className="text-black text-lg font-bold leading-tight">{copy.tiktokHeadline}</h3>
+
+            <ul className="space-y-2">
+              {copy.benefits.map((benefit) => (
+                <li key={benefit} className="flex items-start gap-2 text-sm text-zinc-700">
+                  <span className="text-green-500 mt-0.5">✓</span>
+                  <span>{benefit}</span>
+                </li>
+              ))}
+            </ul>
+
+            <div className="space-y-3">
+              {fields.map((field) => (
+                <div key={field.id} className="space-y-1">
+                  <label className="text-xs text-zinc-500 font-medium">
+                    {field.label}
+                    {field.required && <span className="text-red-500 ml-0.5">*</span>}
+                  </label>
+                  <input
+                    type={
+                      field.tiktokFieldType === 'EMAIL'
+                        ? 'email'
+                        : field.tiktokFieldType === 'PHONE_NUMBER'
+                          ? 'tel'
+                          : 'text'
+                    }
+                    placeholder={field.placeholder || field.label}
+                    className="w-full h-10 bg-zinc-100 rounded-lg border border-zinc-200 px-3 text-sm text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 transition-colors"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-all hover:opacity-90 active:scale-[0.98]"
+              style={{ backgroundColor: ctaSubmitted ? '#22c55e' : primaryColor }}
+              onClick={onSubmit}
+            >
+              {ctaSubmitted ? '✓ Lead Submitted to TikTok!' : copy.tiktokCta}
+            </button>
+
+            {copy.disclaimerText && (
+              <p className="text-[10px] text-zinc-400 text-center leading-tight">
+                {copy.disclaimerText}
+              </p>
+            )}
+          </div>
+
+          <div className="px-4 py-2 bg-zinc-50 border-t border-zinc-100">
+            <p className="text-[10px] text-zinc-400 text-center">
+              Powered by TikTok Lead Generation
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-center mt-2">
+        <div className="w-24 h-1 bg-zinc-800 rounded-full" />
+      </div>
+    </div>
+  );
+}
 
 function PreviewContent() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const aid = searchParams.get('aid');
 
   const [data, setData] = useState<AnalyzeResponseData | null>(null);
+  const [editableFields, setEditableFields] = useState<ExtractedField[]>([]);
+  const [editableCopy, setEditableCopy] = useState<GeneratedCopy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showShareToast, setShowShareToast] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [ctaSubmitted, setCtaSubmitted] = useState(false);
+  const [activeTab, setActiveTab] = useState<PreviewTab>('ai-copy');
+  const [screenshotZoom, setScreenshotZoom] = useState(1);
+  const [editingField, setEditingField] = useState<ExtractedField | null>(null);
+  const [fieldDraft, setFieldDraft] = useState<ExtractedField | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [selectedTone, setSelectedTone] = useState<Tone>('urgent');
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!aid) {
@@ -34,12 +246,16 @@ function PreviewContent() {
         const result = await response.json();
 
         if (result.success) {
-          setData(result.data);
+          const payload = result.data as AnalyzeResponseData;
+          setData(payload);
+          setEditableFields(payload.extractedFields);
+          setEditableCopy(payload.generatedCopy);
+          setActiveStep(payload.journey[0]?.stepNumber || 1);
         } else {
           setError(result.error?.message || 'Failed to load analysis');
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Network error');
+      } catch (fetchError) {
+        setError(fetchError instanceof Error ? fetchError.message : 'Network error');
       } finally {
         setLoading(false);
       }
@@ -49,33 +265,99 @@ function PreviewContent() {
   }, [aid]);
 
   const handleShare = async () => {
-    const url = window.location.href;
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(window.location.href);
       setShowShareToast(true);
       setTimeout(() => setShowShareToast(false), 2000);
-    } catch {
-      // Fallback
-    }
+    } catch {}
   };
 
-  const getStepTypeLabel = (stepType: JourneyStep['stepType']) => {
-    switch (stepType) {
-      case 'landing': return 'Landing';
-      case 'form': return 'Form';
-      case 'multistep': return 'Multi-step';
-      case 'confirmation': return 'Complete';
-      default: return 'Step';
-    }
+  const openFieldEditor = (field: ExtractedField) => {
+    setEditingField(field);
+    setFieldDraft({ ...field });
+    setFieldError(null);
   };
 
-  const getStepTypeColor = (stepType: JourneyStep['stepType']) => {
-    switch (stepType) {
-      case 'landing': return 'bg-blue-500/20 text-blue-400';
-      case 'form': return 'bg-yellow-500/20 text-yellow-400';
-      case 'multistep': return 'bg-orange-500/20 text-orange-400';
-      case 'confirmation': return 'bg-green-500/20 text-green-400';
-      default: return 'bg-zinc-500/20 text-zinc-400';
+  const closeFieldEditor = () => {
+    setEditingField(null);
+    setFieldDraft(null);
+    setFieldError(null);
+  };
+
+  const saveFieldEdit = () => {
+    if (!editingField || !fieldDraft) {
+      return;
+    }
+
+    const nextLabel = fieldDraft.label.trim();
+
+    if (!nextLabel) {
+      setFieldError('Label is required');
+      return;
+    }
+
+    if (nextLabel.length > 50) {
+      setFieldError('Label max 50 characters');
+      return;
+    }
+
+    setEditableFields((currentFields) =>
+      currentFields.map((field) =>
+        field.id === editingField.id
+          ? {
+              ...field,
+              label: nextLabel,
+              placeholder: fieldDraft.placeholder,
+              required: fieldDraft.required,
+            }
+          : field
+      )
+    );
+    closeFieldEditor();
+  };
+
+  const handleRegenerateCopy = async () => {
+    if (!data || !editableCopy) {
+      return;
+    }
+
+    setIsRegenerating(true);
+    setRegenerateError(null);
+
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          context: {
+            originalHeadline: editableCopy.originalHeadline,
+            originalCta: editableCopy.originalCta,
+            industry: guessIndustry(data.landingPageUrl),
+            tone: selectedTone,
+            brandName: data.brandColors.name.replace(' - SIMULATED DEMO DATA', ''),
+            benefits: editableCopy.benefits,
+          },
+        }),
+      });
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error?.message || 'Failed to regenerate copy');
+      }
+
+      setEditableCopy((currentCopy) => ({
+        ...(currentCopy || editableCopy),
+        ...result.data,
+        originalHeadline: editableCopy.originalHeadline,
+        originalCta: editableCopy.originalCta,
+      }));
+      setCtaSubmitted(false);
+    } catch (regenError) {
+      setRegenerateError(regenError instanceof Error ? regenError.message : 'Failed to regenerate copy');
+    } finally {
+      setIsRegenerating(false);
     }
   };
 
@@ -90,7 +372,7 @@ function PreviewContent() {
     );
   }
 
-  if (error || !data) {
+  if (error || !data || !editableCopy) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-black text-white">
         <div className="text-center space-y-4">
@@ -103,17 +385,24 @@ function PreviewContent() {
     );
   }
 
-  const { brandColors, extractedFields, generatedCopy, screenshot, isSimulatedData, landingPageUrl, journey, totalJourneySteps } = data;
-
-  // Calculate total fields across all steps
-  const totalFieldsInJourney = journey?.reduce((sum, step) => sum + step.fields.length, 0) || extractedFields.length;
-
-  // Get active step data
-  const activeStepData = journey?.find(s => s.stepNumber === activeStep) || journey?.[0];
+  const {
+    brandColors,
+    screenshot,
+    isSimulatedData,
+    landingPageUrl,
+    journey,
+    totalJourneySteps,
+    performance,
+    retargeting,
+  } = data;
+  const totalFieldsInJourney = journey.reduce((sum, step) => sum + step.fields.length, 0) || editableFields.length;
+  const activeStepData = journey.find((step) => step.stepNumber === activeStep) || journey[0];
+  const activeScreenshotSrc = activeStepData?.screenshotUrl
+    || (activeStepData?.screenshotBase64 ? `data:image/png;base64,${activeStepData.screenshotBase64}` : undefined)
+    || (activeStep === 1 ? screenshot.url : undefined);
 
   return (
     <div className="min-h-screen bg-black text-white">
-      {/* Header */}
       <header className="w-full py-4 px-6 flex items-center justify-between border-b border-zinc-800">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: TIKTOK_RED }}>
@@ -123,62 +412,62 @@ function PreviewContent() {
         </div>
         <div className="flex items-center gap-4">
           <button
+            type="button"
             onClick={handleShare}
             className="px-4 py-2 rounded-lg bg-zinc-900 border border-zinc-700 hover:border-zinc-500 transition-colors text-sm"
           >
             Share URL
           </button>
-          <Link
-            href="/"
-            className="text-zinc-400 hover:text-white text-sm"
-          >
+          <Link href="/" className="text-zinc-400 hover:text-white text-sm">
             New Analysis
           </Link>
         </div>
       </header>
 
-      {/* Share Toast */}
       {showShareToast && (
         <div className="fixed top-20 right-6 px-4 py-2 rounded-lg text-sm font-medium text-black z-50" style={{ backgroundColor: TIKTOK_TEAL }}>
           URL copied to clipboard!
         </div>
       )}
 
-      {/* Simulated Data Banner */}
       {isSimulatedData && (
         <div className="w-full py-2 text-center text-sm font-semibold text-black" style={{ backgroundColor: '#FFD700' }}>
           SIMULATED DEMO DATA
         </div>
       )}
 
-      {/* Main Content */}
       <main className="flex flex-col lg:flex-row min-h-[calc(100vh-65px)]">
-        {/* LEFT PANEL (45%) — The 3P Journey — shows pain */}
         <div className="w-full lg:w-[45%] border-r border-zinc-800 bg-zinc-950">
-          {/* Header */}
           <div className="p-6 border-b border-zinc-800">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-lg font-semibold text-zinc-300 flex items-center gap-2">
-                <span>😓</span> The 3P Experience
+                <span>😓</span>
+                <span>The 3P Experience</span>
               </h2>
               <span className="px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-400">
                 {totalJourneySteps} STEPS
               </span>
             </div>
             <p className="text-sm text-zinc-500">Traditional multi-page conversion journey</p>
+            <a
+              href={landingPageUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex text-xs text-zinc-400 hover:text-white underline underline-offset-4"
+            >
+              {landingPageUrl}
+            </a>
           </div>
 
-          {/* Step Stepper */}
           <div className="px-6 py-4 border-b border-zinc-800">
             <div className="flex items-center gap-2">
-              {journey?.map((step, index) => (
+              {journey.map((step, index) => (
                 <button
                   key={step.stepNumber}
+                  type="button"
                   onClick={() => setActiveStep(step.stepNumber)}
                   className={`flex items-center gap-2 transition-all ${
-                    activeStep === step.stepNumber
-                      ? 'opacity-100'
-                      : 'opacity-50 hover:opacity-75'
+                    activeStep === step.stepNumber ? 'opacity-100' : 'opacity-50 hover:opacity-75'
                   }`}
                 >
                   <div
@@ -200,11 +489,9 @@ function PreviewContent() {
             </div>
           </div>
 
-          {/* Step Details */}
           <div className="p-6 space-y-6">
             {activeStepData && (
               <div className="space-y-4">
-                {/* Step Card */}
                 <div className="bg-zinc-900 rounded-xl border border-zinc-800 overflow-hidden">
                   <div className="p-4 border-b border-zinc-800">
                     <div className="flex items-center justify-between">
@@ -217,30 +504,53 @@ function PreviewContent() {
                           </span>
                         </div>
                       </div>
+                      {activeScreenshotSrc && (
+                        <div className="flex items-center gap-2 text-xs text-zinc-400">
+                          <button
+                            type="button"
+                            onClick={() => setScreenshotZoom(1)}
+                            className={`rounded-full px-2 py-1 ${screenshotZoom === 1 ? 'bg-zinc-700 text-white' : 'bg-zinc-800'}`}
+                          >
+                            1x
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setScreenshotZoom(1.5)}
+                            className={`rounded-full px-2 py-1 ${screenshotZoom === 1.5 ? 'bg-zinc-700 text-white' : 'bg-zinc-800'}`}
+                          >
+                            1.5x
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* Screenshot Placeholder */}
-                  <div className="aspect-video bg-zinc-950 flex items-center justify-center border-b border-zinc-800">
-                    {(activeStepData.screenshotBase64 || activeStepData.screenshotUrl) ? (
-                      <img
-                        src={activeStepData.screenshotUrl || `data:image/png;base64,${activeStepData.screenshotBase64}`}
-                        alt={`Step ${activeStepData.stepNumber}`}
-                        className="w-full h-full object-cover object-top"
-                      />
+                  <div className="aspect-video bg-zinc-950 overflow-auto border-b border-zinc-800">
+                    {activeScreenshotSrc ? (
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={activeScreenshotSrc}
+                          alt={`Step ${activeStepData.stepNumber}`}
+                          className="w-full h-full object-cover object-top transition-transform duration-200"
+                          style={{ transform: `scale(${screenshotZoom})`, transformOrigin: 'top center' }}
+                        />
+                      </>
                     ) : (
-                      /* Form mockup when no screenshot */
                       <div className="w-full h-full bg-white p-4 overflow-auto">
                         <div className="max-w-sm mx-auto space-y-3">
                           <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
                             {activeStepData.title}
                           </div>
                           {activeStepData.fields.length > 0 ? (
-                            activeStepData.fields.map((f, i) => (
-                              <div key={i} className="space-y-1">
-                                <div className="text-xs text-zinc-600">{f.label}{f.required ? ' *' : ''}</div>
+                            activeStepData.fields.map((field) => (
+                              <div key={field.id} className="space-y-1">
+                                <div className="text-xs text-zinc-600">
+                                  {field.label}
+                                  {field.required ? ' *' : ''}
+                                </div>
                                 <div className="h-9 border border-zinc-300 rounded bg-zinc-50 px-3 flex items-center text-xs text-zinc-400">
-                                  {f.placeholder || f.label}
+                                  {field.placeholder || field.label}
                                 </div>
                               </div>
                             ))
@@ -251,17 +561,11 @@ function PreviewContent() {
                               <p className="text-xs text-zinc-400 mt-1">Landing page</p>
                             </div>
                           )}
-                          {activeStepData.ctaText && (
-                            <div className="mt-4 h-9 rounded bg-zinc-800 flex items-center justify-center text-white text-xs font-medium">
-                              {activeStepData.ctaText} →
-                            </div>
-                          )}
                         </div>
                       </div>
                     )}
                   </div>
 
-                  {/* Fields on this step */}
                   <div className="p-4">
                     <p className="text-xs text-zinc-500 mb-2">Fields on this step:</p>
                     {activeStepData.fields.length > 0 ? (
@@ -276,17 +580,16 @@ function PreviewContent() {
                         ))}
                       </div>
                     ) : (
-                      <p className="text-xs text-zinc-600 italic">No fields — CTA click required</p>
+                      <p className="text-xs text-zinc-600 italic">No fields on this step</p>
                     )}
                   </div>
 
-                  {/* CTA */}
                   {activeStepData.ctaText && (
                     <div className="px-4 pb-4">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-zinc-500">CTA:</span>
                         <span className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-300">
-                          "{activeStepData.ctaText}"
+                          &ldquo;{activeStepData.ctaText}&rdquo;
                         </span>
                         <span className="text-zinc-600">→</span>
                       </div>
@@ -294,13 +597,13 @@ function PreviewContent() {
                   )}
                 </div>
 
-                {/* Journey Flow Visualization */}
                 <div className="bg-zinc-900/50 rounded-xl p-4 border border-zinc-800">
                   <p className="text-xs text-zinc-500 mb-3">Full Journey Flow:</p>
                   <div className="flex items-center gap-2 flex-wrap">
-                    {journey?.map((step, index) => (
+                    {journey.map((step, index) => (
                       <div key={step.stepNumber} className="flex items-center">
                         <button
+                          type="button"
                           onClick={() => setActiveStep(step.stepNumber)}
                           className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                             activeStep === step.stepNumber
@@ -325,7 +628,6 @@ function PreviewContent() {
               </div>
             )}
 
-            {/* Friction Summary */}
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
               <div className="flex items-center gap-2 mb-2">
                 <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -338,20 +640,17 @@ function PreviewContent() {
                 <span className="text-white font-semibold">{totalFieldsInJourney} form fields</span> across{' '}
                 <span className="text-white font-semibold">{totalJourneySteps} steps</span>
               </p>
-              <p className="text-xs text-zinc-500 mt-1">
-                Estimated completion time: ~2-3 minutes
-              </p>
+              <p className="text-xs text-zinc-500 mt-1">Estimated completion time: ~2-3 minutes</p>
             </div>
           </div>
         </div>
 
-        {/* RIGHT PANEL (55%) — The TikTok 1P Form — shows delight */}
         <div className="w-full lg:w-[55%] bg-white">
-          {/* Header */}
           <div className="p-6 border-b border-zinc-200">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-lg font-semibold text-zinc-800 flex items-center gap-2">
-                <span>✨</span> TikTok Instant Form
+                <span>✨</span>
+                <span>TikTok Instant Form</span>
               </h2>
               <span className="px-3 py-1 rounded-full text-xs font-bold text-white" style={{ backgroundColor: TIKTOK_TEAL }}>
                 1 STEP
@@ -361,131 +660,164 @@ function PreviewContent() {
           </div>
 
           <div className="p-6">
-            {/* Mobile Frame */}
-            <div className="max-w-sm mx-auto">
-              {/* Phone Frame */}
-              <div className="bg-zinc-900 rounded-[2.5rem] p-3 border-4 border-zinc-800 shadow-2xl">
-                {/* Screen */}
-                <div className="bg-white rounded-[2rem] overflow-hidden">
-                  {/* TikTok Header */}
-                  <div className="px-4 py-3 flex items-center justify-between" style={{ backgroundColor: brandColors.primaryColor }}>
-                    <div className="flex items-center gap-2">
-                      {brandColors.logoUrl ? (
-                        <img src={brandColors.logoUrl} alt="Logo" className="w-6 h-6 rounded" />
-                      ) : (
-                        <div className="w-6 h-6 rounded bg-white/20 flex items-center justify-center">
-                          <span className="text-xs font-bold text-white">{brandColors.name.charAt(0)}</span>
-                        </div>
-                      )}
-                      <span className="text-white text-sm font-medium truncate max-w-[120px]">
-                        {brandColors.name.replace(' - SIMULATED DEMO DATA', '')}
-                      </span>
+            <div className="flex flex-wrap gap-3 mb-6">
+              <TabButton label="Field Detection" tab="field-detection" activeTab={activeTab} onClick={setActiveTab} />
+              <TabButton label="AI Copy" tab="ai-copy" activeTab={activeTab} onClick={setActiveTab} />
+              <TabButton label="Performance" tab="performance" activeTab={activeTab} onClick={setActiveTab} />
+            </div>
+
+            {activeTab === 'field-detection' && (
+              <div className="space-y-4">
+                {editableFields.map((field) => (
+                  <div
+                    key={field.id}
+                    className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-semibold text-zinc-900">{field.label}</h3>
+                        <FieldTypeBadge type={field.tiktokFieldType} />
+                        <span className="rounded-full bg-zinc-200 px-2.5 py-1 text-[11px] font-medium text-zinc-700">
+                          {(field.confidence * 100).toFixed(0)}% confidence
+                        </span>
+                        {field.required && (
+                          <span className="rounded-full bg-red-100 px-2.5 py-1 text-[11px] font-medium text-red-700">
+                            Required
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-zinc-500">{field.sourceSelector}</p>
                     </div>
-                    <div className="w-6 h-6 rounded-full bg-white/20" />
-                  </div>
-
-                  {/* Form Content */}
-                  <div className="p-5 space-y-4">
-                    {/* Headline */}
-                    <div>
-                      <h3 className="text-black text-lg font-bold leading-tight">
-                        {generatedCopy.tiktokHeadline}
-                      </h3>
-                    </div>
-
-                    {/* Benefits */}
-                    <ul className="space-y-2">
-                      {generatedCopy.benefits.map((benefit, idx) => (
-                        <li key={idx} className="flex items-start gap-2 text-sm text-zinc-700">
-                          <span className="text-green-500 mt-0.5">✓</span>
-                          <span>{benefit}</span>
-                        </li>
-                      ))}
-                    </ul>
-
-                    {/* Form Fields */}
-                    <div className="space-y-3">
-                      {extractedFields.map((field) => (
-                        <div key={field.id} className="space-y-1">
-                          <label className="text-xs text-zinc-500 font-medium">
-                            {field.label}{field.required && <span className="text-red-500 ml-0.5">*</span>}
-                          </label>
-                          <input
-                            type={field.tiktokFieldType === 'EMAIL' ? 'email' : field.tiktokFieldType === 'PHONE_NUMBER' ? 'tel' : 'text'}
-                            placeholder={field.placeholder || field.label}
-                            className="w-full h-10 bg-zinc-100 rounded-lg border border-zinc-200 px-3 text-sm text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-zinc-400 transition-colors"
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* CTA Button */}
                     <button
-                      className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-all hover:opacity-90 active:scale-[0.98]"
-                      style={{ backgroundColor: ctaSubmitted ? '#22c55e' : brandColors.primaryColor }}
-                      onClick={() => setCtaSubmitted(true)}
+                      type="button"
+                      onClick={() => openFieldEditor(field)}
+                      className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:border-zinc-500 hover:text-zinc-900"
                     >
-                      {ctaSubmitted ? '✓ Lead Submitted to TikTok!' : generatedCopy.tiktokCta}
+                      Edit
                     </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-                    {/* Disclaimer */}
-                    {generatedCopy.disclaimerText && (
-                      <p className="text-[10px] text-zinc-400 text-center leading-tight">
-                        {generatedCopy.disclaimerText}
-                      </p>
-                    )}
+            {activeTab === 'ai-copy' && (
+              <div className="space-y-6">
+                <div className="max-w-md mx-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4 space-y-4">
+                  <div className="grid gap-3 text-sm">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Original headline</p>
+                      <p className="text-zinc-900">{editableCopy.originalHeadline}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">AI headline</p>
+                      <p className="text-zinc-900 font-semibold">{editableCopy.tiktokHeadline}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Why this works</p>
+                      <p className="text-zinc-600">{editableCopy.explanation}</p>
+                    </div>
                   </div>
 
-                  {/* TikTok Footer */}
-                  <div className="px-4 py-2 bg-zinc-50 border-t border-zinc-100">
-                    <p className="text-[10px] text-zinc-400 text-center">
-                      Powered by TikTok Lead Generation
-                    </p>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <select
+                      value={selectedTone}
+                      onChange={(event) => setSelectedTone(event.target.value as Tone)}
+                      className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700"
+                    >
+                      {TONE_OPTIONS.map((tone) => (
+                        <option key={tone} value={tone}>
+                          {tone.charAt(0).toUpperCase() + tone.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleRegenerateCopy}
+                      disabled={isRegenerating}
+                      className="rounded-xl px-4 py-2 text-sm font-semibold text-black disabled:opacity-60"
+                      style={{ backgroundColor: TIKTOK_TEAL }}
+                    >
+                      {isRegenerating ? 'Regenerating...' : 'Regenerate'}
+                    </button>
+                  </div>
+
+                  {regenerateError && (
+                    <p className="text-sm text-red-600">{regenerateError}</p>
+                  )}
+                </div>
+
+                <PhonePreview
+                  brandName={brandColors.name.replace(' - SIMULATED DEMO DATA', '')}
+                  logoUrl={brandColors.logoUrl}
+                  primaryColor={brandColors.primaryColor}
+                  fields={editableFields}
+                  copy={editableCopy}
+                  ctaSubmitted={ctaSubmitted}
+                  onSubmit={() => setCtaSubmitted(true)}
+                />
+
+                <div className="mt-8 max-w-sm mx-auto space-y-3">
+                  <div className="flex items-center gap-3 text-sm text-zinc-600">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
+                      <span className="text-lg">⚡</span>
+                    </div>
+                    <span>One tap, no page loads</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-zinc-600">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
+                      <span className="text-lg">🔄</span>
+                    </div>
+                    <span>Auto-filled from TikTok profile</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-zinc-600">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
+                      <span className="text-lg">🎯</span>
+                    </div>
+                    <span>Native, trusted experience</span>
                   </div>
                 </div>
               </div>
+            )}
 
-              {/* Home Indicator */}
-              <div className="flex justify-center mt-2">
-                <div className="w-24 h-1 bg-zinc-800 rounded-full" />
-              </div>
-            </div>
+            {activeTab === 'performance' && (
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
+                    <p className="text-sm text-zinc-500">Total Form Starts</p>
+                    <p className="mt-2 text-3xl font-bold text-zinc-900">{retargeting.totalFormStarts.toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
+                    <p className="text-sm text-zinc-500">Total Abandonments</p>
+                    <p className="mt-2 text-3xl font-bold text-zinc-900">{retargeting.totalAbandonments.toLocaleString()}</p>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
+                    <p className="text-sm text-zinc-500">Estimated CTR Lift</p>
+                    <p className="mt-2 text-3xl font-bold text-zinc-900">+{(retargeting.estimatedCtrLift * 100).toFixed(0)}%</p>
+                  </div>
+                </div>
 
-            {/* Benefits List */}
-            <div className="mt-8 max-w-sm mx-auto space-y-3">
-              <div className="flex items-center gap-3 text-sm text-zinc-600">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
-                  <span className="text-lg">⚡</span>
-                </div>
-                <span>One tap — no page loads</span>
-              </div>
-              <div className="flex items-center gap-3 text-sm text-zinc-600">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
-                  <span className="text-lg">🔄</span>
-                </div>
-                <span>Auto-filled from TikTok profile</span>
-              </div>
-              <div className="flex items-center gap-3 text-sm text-zinc-600">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: `${TIKTOK_TEAL}20` }}>
-                  <span className="text-lg">🎯</span>
-                </div>
-                <span>Native, trusted experience</span>
-              </div>
-            </div>
-
-            {/* Time Comparison */}
-            <div className="mt-8 max-w-sm mx-auto bg-zinc-50 rounded-xl p-4 border border-zinc-200">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-zinc-500">Completion time:</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-zinc-400 line-through">~2-3 min</span>
-                  <span className="font-bold" style={{ color: TIKTOK_TEAL }}>~15 sec</span>
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-600">3P load time</span>
+                    <span className="text-lg font-semibold text-zinc-900">{performance.estimated3pLoadTime.toFixed(1)}s</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-600">TikTok 1P load time</span>
+                    <span className="text-lg font-semibold" style={{ color: TIKTOK_TEAL }}>
+                      {performance.estimated1pLoadTime.toFixed(1)}s
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-600">Estimated drop-off reduction</span>
+                    <span className="text-lg font-semibold text-green-600">
+                      {(performance.estimatedDropOffReduction * 100).toFixed(0)}%
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Action Buttons */}
           <div className="flex justify-center gap-4 p-6 pt-0">
             <Link
               href={`/bonus?aid=${aid}`}
@@ -497,20 +829,89 @@ function PreviewContent() {
           </div>
         </div>
       </main>
+
+      {editingField && fieldDraft && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Edit field</p>
+                <h2 className="text-xl font-semibold text-zinc-900">{editingField.label}</h2>
+              </div>
+              <button type="button" onClick={closeFieldEditor} className="text-zinc-400 hover:text-zinc-700">
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-zinc-700">Label</span>
+                <input
+                  type="text"
+                  value={fieldDraft.label}
+                  onChange={(event) => setFieldDraft({ ...fieldDraft, label: event.target.value })}
+                  className="w-full rounded-xl border border-zinc-300 px-4 py-3 text-sm text-zinc-900"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-zinc-700">Placeholder</span>
+                <input
+                  type="text"
+                  value={fieldDraft.placeholder || ''}
+                  onChange={(event) => setFieldDraft({ ...fieldDraft, placeholder: event.target.value })}
+                  className="w-full rounded-xl border border-zinc-300 px-4 py-3 text-sm text-zinc-900"
+                />
+              </label>
+
+              <label className="flex items-center gap-3 text-sm text-zinc-700">
+                <input
+                  type="checkbox"
+                  checked={fieldDraft.required}
+                  onChange={(event) => setFieldDraft({ ...fieldDraft, required: event.target.checked })}
+                />
+                Required field
+              </label>
+
+              {fieldError && <p className="text-sm text-red-600">{fieldError}</p>}
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeFieldEditor}
+                className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveFieldEdit}
+                className="rounded-xl px-4 py-2 text-sm font-semibold text-black"
+                style={{ backgroundColor: TIKTOK_TEAL }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 export default function PreviewPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-black text-white">
-        <div className="text-center space-y-4">
-          <div className="w-8 h-8 border-2 border-zinc-600 border-t-white rounded-full animate-spin mx-auto" />
-          <p className="text-zinc-400">Loading preview...</p>
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-black text-white">
+          <div className="text-center space-y-4">
+            <div className="w-8 h-8 border-2 border-zinc-600 border-t-white rounded-full animate-spin mx-auto" />
+            <p className="text-zinc-400">Loading preview...</p>
+          </div>
         </div>
-      </div>
-    }>
+      }
+    >
       <PreviewContent />
     </Suspense>
   );

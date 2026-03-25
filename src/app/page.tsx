@@ -136,8 +136,8 @@ export default function Home() {
     // Navigate with demo flag
     const demoUrl = url.includes('opendoor') ? 'opendoor' : 'sonobello';
     const demoData = demoUrl === 'opendoor'
-      ? 'aid_opendoor_fixture'
-      : 'aid_sonobello_fixture';
+      ? 'demo_opendoor'
+      : 'demo_sonobello';
     router.push(`/preview?aid=${demoData}`);
   };
 
