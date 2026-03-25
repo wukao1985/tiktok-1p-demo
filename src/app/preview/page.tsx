@@ -229,11 +229,34 @@ function PreviewContent() {
                         className="w-full h-full object-cover object-top"
                       />
                     ) : (
-                      <div className="text-center text-zinc-600">
-                        <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                        </svg>
-                        <p className="text-xs">Page screenshot unavailable</p>
+                      /* Form mockup when no screenshot */
+                      <div className="w-full h-full bg-white p-4 overflow-auto">
+                        <div className="max-w-sm mx-auto space-y-3">
+                          <div className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
+                            {activeStepData.title}
+                          </div>
+                          {activeStepData.fields.length > 0 ? (
+                            activeStepData.fields.map((f, i) => (
+                              <div key={i} className="space-y-1">
+                                <div className="text-xs text-zinc-600">{f.label}{f.required ? ' *' : ''}</div>
+                                <div className="h-9 border border-zinc-300 rounded bg-zinc-50 px-3 flex items-center text-xs text-zinc-400">
+                                  {f.placeholder || f.label}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="py-6 text-center">
+                              <div className="text-3xl mb-2">🏠</div>
+                              <p className="text-sm font-medium text-zinc-700">{activeStepData.title}</p>
+                              <p className="text-xs text-zinc-400 mt-1">Landing page</p>
+                            </div>
+                          )}
+                          {activeStepData.ctaText && (
+                            <div className="mt-4 h-9 rounded bg-zinc-800 flex items-center justify-center text-white text-xs font-medium">
+                              {activeStepData.ctaText} →
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
