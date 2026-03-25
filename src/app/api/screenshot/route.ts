@@ -1,6 +1,12 @@
 import { kv } from '@vercel/kv';
 import { NextRequest, NextResponse } from 'next/server';
 
+import {
+  getExpiryMetadataKey,
+  isExpired,
+  parseExpiryMetadata,
+} from '@/lib/kv-expiry';
+
 export const runtime = 'nodejs';
 export const maxDuration = 30;
 
@@ -27,8 +33,27 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const storedScreenshot = await kv.get<string>(`screenshot:${id}`);
+    const [storedScreenshot, expiryMetadataValue] = await Promise.all([
+      kv.get<string>(`screenshot:${id}`),
+      kv.get<string>(getExpiryMetadataKey('screenshot', id)),
+    ]);
+
     if (!storedScreenshot) {
+      const expiryMetadata = parseExpiryMetadata(expiryMetadataValue);
+      if (isExpired(expiryMetadata)) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: {
+              code: 'SCREENSHOT_EXPIRED',
+              message: 'Screenshot exceeded TTL and was purged',
+              retryable: false,
+            },
+          },
+          { status: 410 }
+        );
+      }
+
       return NextResponse.json(
         {
           success: false,

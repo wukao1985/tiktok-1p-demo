@@ -237,7 +237,7 @@ function PreviewContent() {
   const [showShareToast, setShowShareToast] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
   const [ctaSubmitted, setCtaSubmitted] = useState(false);
-  const [activeTab, setActiveTab] = useState<PreviewTab>('ai-copy');
+  const [activeTab, setActiveTab] = useState<PreviewTab>('field-detection');
   const [screenshotZoom, setScreenshotZoom] = useState(1);
   const [editingField, setEditingField] = useState<ExtractedField | null>(null);
   const [fieldDraft, setFieldDraft] = useState<ExtractedField | null>(null);
@@ -418,6 +418,8 @@ function PreviewContent() {
   const activeScreenshotSrc = activeStepData?.screenshotUrl
     || (activeStepData?.screenshotBase64 ? `data:image/png;base64,${activeStepData.screenshotBase64}` : undefined)
     || (activeStep === 1 ? screenshot.url : undefined);
+  const maxLoadTime = Math.max(performance.estimated3pLoadTime, performance.estimated1pLoadTime, 0.1);
+  const maxDropOff = Math.max(performance.dropOff3p, performance.dropOff1p, 0.01);
   const shouldShowFormOverlay = Boolean(
     activeStepData?.stepNumber === 1 &&
     activeScreenshotSrc &&
@@ -828,7 +830,7 @@ function PreviewContent() {
             )}
 
             {activeTab === 'performance' && (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 <div className="grid gap-4 md:grid-cols-3">
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
                     <p className="text-sm text-zinc-500">Total Form Starts</p>
@@ -844,23 +846,114 @@ function PreviewContent() {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-zinc-600">3P load time</span>
-                    <span className="text-lg font-semibold text-zinc-900">{performance.estimated3pLoadTime.toFixed(1)}s</span>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 space-y-4">
+                    <div>
+                      <p className="text-sm font-semibold text-zinc-900">Load Time Comparison</p>
+                      <p className="text-sm text-zinc-500">Page-load delay before a lead can submit.</p>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-zinc-700">3P landing page</span>
+                          <span className="font-semibold text-zinc-900">{performance.estimated3pLoadTime.toFixed(1)}s</span>
+                        </div>
+                        <div className="h-3 overflow-hidden rounded-full bg-zinc-200">
+                          <div
+                            className="h-full rounded-full bg-red-500"
+                            style={{ width: `${(performance.estimated3pLoadTime / maxLoadTime) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-zinc-700">TikTok instant form</span>
+                          <span className="font-semibold" style={{ color: TIKTOK_TEAL }}>
+                            {performance.estimated1pLoadTime.toFixed(1)}s
+                          </span>
+                        </div>
+                        <div className="h-3 overflow-hidden rounded-full bg-zinc-200">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${(performance.estimated1pLoadTime / maxLoadTime) * 100}%`,
+                              backgroundColor: TIKTOK_TEAL,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-zinc-600">TikTok 1P load time</span>
-                    <span className="text-lg font-semibold" style={{ color: TIKTOK_TEAL }}>
-                      {performance.estimated1pLoadTime.toFixed(1)}s
-                    </span>
+
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 space-y-4">
+                    <div>
+                      <p className="text-sm font-semibold text-zinc-900">Drop-off Comparison</p>
+                      <p className="text-sm text-zinc-500">Side-by-side abandonment rate from the stored model.</p>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-red-600">3P drop-off</p>
+                        <p className="mt-2 text-3xl font-bold text-red-700">
+                          {(performance.dropOff3p * 100).toFixed(0)}%
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border p-4" style={{ borderColor: `${TIKTOK_TEAL}55`, backgroundColor: `${TIKTOK_TEAL}14` }}>
+                        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: '#0f766e' }}>TikTok 1P drop-off</p>
+                        <p className="mt-2 text-3xl font-bold" style={{ color: '#0f766e' }}>
+                          {(performance.dropOff1p * 100).toFixed(0)}%
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-zinc-700">3P landing page</span>
+                          <span className="font-semibold text-zinc-900">{(performance.dropOff3p * 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="h-3 overflow-hidden rounded-full bg-zinc-200">
+                          <div
+                            className="h-full rounded-full bg-red-500"
+                            style={{ width: `${(performance.dropOff3p / maxDropOff) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-zinc-700">TikTok instant form</span>
+                          <span className="font-semibold" style={{ color: TIKTOK_TEAL }}>
+                            {(performance.dropOff1p * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <div className="h-3 overflow-hidden rounded-full bg-zinc-200">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${(performance.dropOff1p / maxDropOff) * 100}%`,
+                              backgroundColor: TIKTOK_TEAL,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-green-200 bg-green-50 p-5">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-zinc-600">Estimated drop-off reduction</span>
-                    <span className="text-lg font-semibold text-green-600">
+                    <span className="text-sm font-medium text-green-700">Estimated drop-off reduction</span>
+                    <span className="text-2xl font-bold text-green-700">
                       {(performance.estimatedDropOffReduction * 100).toFixed(0)}%
                     </span>
                   </div>
+                  <p className="mt-2 text-sm text-green-700/80">
+                    Moving from the current 3P flow to TikTok 1P cuts modeled abandonment from{' '}
+                    {(performance.dropOff3p * 100).toFixed(0)}% to {(performance.dropOff1p * 100).toFixed(0)}%.
+                  </p>
                 </div>
               </div>
             )}

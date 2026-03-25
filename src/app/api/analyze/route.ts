@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { kv } from '@vercel/kv';
 import { v4 as uuidv4 } from 'uuid';
@@ -5,6 +8,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { analyzePage } from '@/lib/analyze-page';
 import { ANALYZE_ROUTE_TIMEOUT_MS } from '@/lib/analysis-budget';
 import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
+import {
+  getExpiryMetadataKey,
+  createExpiryMetadata,
+  getExpiryMetadataTtlSeconds,
+  isExpired,
+  parseExpiryMetadata,
+} from '@/lib/kv-expiry';
 import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
 import { AnalyzeResponseData } from '@/types';
 
@@ -13,6 +23,17 @@ export const maxDuration = 60;
 
 const ANALYSIS_TTL_SECONDS = Number.parseInt(process.env.ANALYSIS_TTL_SECONDS || '300', 10);
 const DEMO_TTL_SECONDS = 3600;
+type RouteTimeoutPhase = 'analysis' | 'finalization';
+
+class RouteTimeoutError extends Error {
+  phase: RouteTimeoutPhase;
+
+  constructor(phase: RouteTimeoutPhase) {
+    super('TIMEOUT');
+    this.name = 'RouteTimeoutError';
+    this.phase = phase;
+  }
+}
 
 function normalizeUrl(url: string) {
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -64,26 +85,85 @@ function getDemoPayload(url: string) {
 }
 
 function withAnalysisId(data: AnalyzeResponseData, analysisId: string) {
-  const screenshotUrl =
-    data.screenshot.status === 'ok' && data.screenshot.url?.startsWith('/api/screenshot')
-      ? `/api/screenshot?id=${analysisId}`
-      : data.screenshot.url;
-
   return {
     ...data,
     analysisId,
     createdAt: new Date().toISOString(),
+  };
+}
+
+function isRouteTimeoutError(error: unknown, phase?: RouteTimeoutPhase): error is RouteTimeoutError {
+  return error instanceof RouteTimeoutError && (!phase || error.phase === phase);
+}
+
+function getScreenshotApiUrl(analysisId: string) {
+  return `/api/screenshot?id=${analysisId}`;
+}
+
+function withPrimaryScreenshotApiUrl(data: AnalyzeResponseData) {
+  const screenshotUrl =
+    data.screenshot.status === 'ok'
+      ? getScreenshotApiUrl(data.analysisId)
+      : data.screenshot.url;
+  const hasPrimaryStepScreenshot = Boolean(data.journey[0]?.screenshotUrl);
+
+  return {
+    ...data,
     screenshot: data.screenshot.status === 'ok'
       ? {
           ...data.screenshot,
           url: screenshotUrl,
         }
       : data.screenshot,
+    journey: hasPrimaryStepScreenshot
+      ? data.journey.map((step, index) =>
+          index === 0
+            ? {
+                ...step,
+                screenshotUrl,
+              }
+            : step
+        )
+      : data.journey,
   };
 }
 
+function getPublicAssetPath(assetUrl: string) {
+  return path.join(process.cwd(), 'public', assetUrl.replace(/^\//, ''));
+}
+
+async function readPublicPngBase64(assetUrl: string) {
+  const pngBytes = await readFile(getPublicAssetPath(assetUrl));
+  return pngBytes.toString('base64');
+}
+
+async function resolvePrimaryScreenshotBase64(data: AnalyzeResponseData) {
+  const primaryScreenshot = data.journey[0]?.screenshotBase64;
+  if (primaryScreenshot) {
+    return primaryScreenshot;
+  }
+
+  const primaryScreenshotUrl = data.journey[0]?.screenshotUrl || data.screenshot.url;
+  if (!primaryScreenshotUrl || primaryScreenshotUrl.startsWith('/api/screenshot')) {
+    return null;
+  }
+
+  return primaryScreenshotUrl.startsWith('/')
+    ? readPublicPngBase64(primaryScreenshotUrl)
+    : null;
+}
+
 async function storeAnalysis(data: AnalyzeResponseData, ttlSeconds: number) {
-  await kv.set(`analysis:${data.analysisId}`, JSON.stringify(data), { ex: ttlSeconds });
+  const expiryMetadata = createExpiryMetadata(ttlSeconds);
+
+  await Promise.all([
+    kv.set(`analysis:${data.analysisId}`, JSON.stringify(data), { ex: ttlSeconds }),
+    kv.set(
+      getExpiryMetadataKey('analysis', data.analysisId),
+      JSON.stringify(expiryMetadata),
+      { ex: getExpiryMetadataTtlSeconds(ttlSeconds) }
+    ),
+  ]);
 }
 
 async function storeScreenshot(analysisId: string, screenshotBase64: string | null | undefined, ttlSeconds: number) {
@@ -91,18 +171,63 @@ async function storeScreenshot(analysisId: string, screenshotBase64: string | nu
     return;
   }
 
-  await kv.set(`screenshot:${analysisId}`, screenshotBase64, { ex: ttlSeconds });
+  const expiryMetadata = createExpiryMetadata(ttlSeconds);
+
+  await Promise.all([
+    kv.set(`screenshot:${analysisId}`, screenshotBase64, { ex: ttlSeconds }),
+    kv.set(
+      getExpiryMetadataKey('screenshot', analysisId),
+      JSON.stringify(expiryMetadata),
+      { ex: getExpiryMetadataTtlSeconds(ttlSeconds) }
+    ),
+  ]);
+}
+
+async function persistArtifacts(data: AnalyzeResponseData, ttlSeconds: number) {
+  const primaryScreenshot = await resolvePrimaryScreenshotBase64(data);
+  const preparedData = withPrimaryScreenshotApiUrl(data);
+
+  await Promise.all([
+    storeAnalysis(preparedData, ttlSeconds),
+    storeScreenshot(preparedData.analysisId, primaryScreenshot, ttlSeconds),
+  ]);
+
+  return preparedData;
 }
 
 async function storeDemoPayload(data: AnalyzeResponseData) {
-  await storeAnalysis(data, DEMO_TTL_SECONDS);
+  return persistArtifacts(data, DEMO_TTL_SECONDS);
 }
 
 async function storeLiveArtifacts(data: AnalyzeResponseData) {
-  await storeAnalysis(data, ANALYSIS_TTL_SECONDS);
+  return persistArtifacts(data, ANALYSIS_TTL_SECONDS);
+}
 
-  const primaryScreenshot = data.journey[0]?.screenshotBase64;
-  await storeScreenshot(data.analysisId, primaryScreenshot, ANALYSIS_TTL_SECONDS);
+async function runWithinRouteBudget<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+  deadlineMs: number,
+  phase: RouteTimeoutPhase
+) {
+  if (signal.aborted || Date.now() >= deadlineMs) {
+    throw new RouteTimeoutError(phase);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new RouteTimeoutError(phase));
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    operation().then(
+      (result) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 function kvWriteErrorResponse(requestId: string, headers: Record<string, string>) {
@@ -112,6 +237,24 @@ function kvWriteErrorResponse(requestId: string, headers: Record<string, string>
       error: {
         code: 'KV_WRITE_ERROR',
         message: 'Failed to store analysis result',
+        retryable: true,
+      },
+      fallbackAvailable: true,
+      requestId,
+      timestamp: new Date().toISOString(),
+    },
+    { status: 503 },
+    headers
+  );
+}
+
+function finalizationTimeoutResponse(requestId: string, headers: Record<string, string>) {
+  return jsonResponse(
+    {
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Analysis finalization exceeded the 8-second deadline',
         retryable: true,
       },
       fallbackAvailable: true,
@@ -253,6 +396,7 @@ function mapAnalyzeError(error: unknown): {
 export async function POST(request: NextRequest) {
   const requestId = `req_${uuidv4().slice(0, 8)}`;
   const startTime = Date.now();
+  const deadlineMs = startTime + ANALYZE_ROUTE_TIMEOUT_MS;
   const rateLimit = await checkRateLimit(request);
   const rateLimitHeaders = getRateLimitHeaders(rateLimit);
   const controller = new AbortController();
@@ -320,107 +464,99 @@ export async function POST(request: NextRequest) {
     const useDemoMode = rateLimit.forceDemoMode || isSonoBello || isOpendoor;
 
     if (useDemoMode) {
-      clearTimeout(timeoutId);
-      const demoData = getDemoPayload(normalizedUrl);
       try {
-        await storeDemoPayload(demoData);
-      } catch (kvError) {
-        console.error('KV write error:', kvError);
-        return kvWriteErrorResponse(requestId, rateLimitHeaders);
-      }
-
-      return jsonResponse(
-        {
-          success: true,
-          data: demoData,
-          requestId,
-          latencyMs: Date.now() - startTime,
-        },
-        { status: 200 },
-        rateLimitHeaders
-      );
-    }
-
-    try {
-      const analysis = await Promise.race([
-        analyzePage(normalizedUrl),
-        new Promise<never>((_, reject) => {
-          controller.signal.addEventListener('abort', () => {
-            reject(new Error('TIMEOUT'));
-          });
-        }),
-      ]);
-
-      clearTimeout(timeoutId);
-
-      const result = analysis as AnalyzeResponseData;
-      try {
-        await storeLiveArtifacts(result);
-      } catch (kvError) {
-        console.error('KV write error:', kvError);
-        return kvWriteErrorResponse(requestId, rateLimitHeaders);
-      }
-
-      return jsonResponse(
-        {
-          success: true,
-          data: result,
-          requestId,
-          latencyMs: Date.now() - startTime,
-        },
-        { status: 200 },
-        rateLimitHeaders
-      );
-    } catch (error) {
-      clearTimeout(timeoutId);
-
-      const errorMessage = error instanceof Error ? error.message : String(error);
-
-      if (errorMessage === 'TIMEOUT' || controller.signal.aborted) {
-        const fallbackData = withAnalysisId(
-          {
-            ...getFallbackData(normalizedUrl),
-            landingPageUrl: normalizedUrl,
-          },
-          `aid_${uuidv4().slice(0, 16)}`
+        const demoData = await runWithinRouteBudget(
+          () => storeDemoPayload(getDemoPayload(normalizedUrl)),
+          controller.signal,
+          deadlineMs,
+          'finalization'
         );
-
-        try {
-          await storeLiveArtifacts(fallbackData);
-        } catch (kvError) {
-          console.error('KV write error:', kvError);
-          return kvWriteErrorResponse(requestId, rateLimitHeaders);
-        }
 
         return jsonResponse(
           {
             success: true,
-            data: fallbackData,
-            fallbackReason: 'timeout',
+            data: demoData,
             requestId,
             latencyMs: Date.now() - startTime,
           },
           { status: 200 },
           rateLimitHeaders
         );
+      } catch (kvError) {
+        if (isRouteTimeoutError(kvError, 'finalization')) {
+          return finalizationTimeoutResponse(requestId, rateLimitHeaders);
+        }
+
+        console.error('KV write error:', kvError);
+        return kvWriteErrorResponse(requestId, rateLimitHeaders);
+      }
+    }
+
+    let result: AnalyzeResponseData;
+    let fallbackReason: 'timeout' | undefined;
+
+    try {
+      result = await runWithinRouteBudget(
+        () => analyzePage(normalizedUrl),
+        controller.signal,
+        deadlineMs,
+        'analysis'
+      );
+    } catch (error) {
+      if (isRouteTimeoutError(error, 'analysis')) {
+        result = withAnalysisId(
+          {
+            ...getFallbackData(normalizedUrl),
+            landingPageUrl: normalizedUrl,
+          },
+          `aid_${uuidv4().slice(0, 16)}`
+        );
+        fallbackReason = 'timeout';
+      } else {
+        const mapped = mapAnalyzeError(error);
+
+        return jsonResponse(
+          {
+            success: false,
+            error: mapped.error,
+            fallbackAvailable: true,
+            requestId,
+            timestamp: new Date().toISOString(),
+          },
+          { status: mapped.status, headers: mapped.headers },
+          rateLimitHeaders
+        );
+      }
+    }
+
+    try {
+      result = await runWithinRouteBudget(
+        () => storeLiveArtifacts(result),
+        controller.signal,
+        deadlineMs,
+        'finalization'
+      );
+    } catch (kvError) {
+      if (isRouteTimeoutError(kvError, 'finalization')) {
+        return finalizationTimeoutResponse(requestId, rateLimitHeaders);
       }
 
-      const mapped = mapAnalyzeError(error);
-
-      return jsonResponse(
-        {
-          success: false,
-          error: mapped.error,
-          fallbackAvailable: true,
-          requestId,
-          timestamp: new Date().toISOString(),
-        },
-        { status: mapped.status, headers: mapped.headers },
-        rateLimitHeaders
-      );
+      console.error('KV write error:', kvError);
+      return kvWriteErrorResponse(requestId, rateLimitHeaders);
     }
+
+    return jsonResponse(
+      {
+        success: true,
+        data: result,
+        fallbackReason,
+        requestId,
+        latencyMs: Date.now() - startTime,
+      },
+      { status: 200 },
+      rateLimitHeaders
+    );
   } catch (error) {
-    clearTimeout(timeoutId);
     console.error('Unexpected error:', error);
 
     return jsonResponse(
@@ -438,6 +574,8 @@ export async function POST(request: NextRequest) {
       { status: 503 },
       rateLimitHeaders
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -463,7 +601,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const stored = await kv.get<string | AnalyzeResponseData>(`analysis:${aid}`);
+    const [stored, expiryMetadataValue] = await Promise.all([
+      kv.get<string | AnalyzeResponseData>(`analysis:${aid}`),
+      kv.get<string>(getExpiryMetadataKey('analysis', aid)),
+    ]);
 
     if (stored) {
       const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
@@ -474,6 +615,23 @@ export async function GET(request: NextRequest) {
         requestId,
         latencyMs: 0,
       });
+    }
+
+    const expiryMetadata = parseExpiryMetadata(expiryMetadataValue);
+    if (isExpired(expiryMetadata)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: 'ANALYSIS_EXPIRED',
+            message: 'Stored analysis exceeded TTL and was purged',
+            retryable: false,
+          },
+          requestId,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 410 }
+      );
     }
 
     return NextResponse.json(
