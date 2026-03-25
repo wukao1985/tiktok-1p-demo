@@ -62,6 +62,7 @@ export interface JourneyStep {
   url: string;
   title: string;               // page title or step label
   screenshotBase64?: string;   // base64 PNG, may be undefined
+  screenshotUrl?: string;      // public URL path (e.g. /sonobello-step1.png)
   fields: ExtractedField[];    // form fields found on this step (may be empty)
   ctaText?: string;            // button text that led to next step
   stepType: StepType;

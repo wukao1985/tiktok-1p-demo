@@ -19,6 +19,7 @@ function PreviewContent() {
   const [error, setError] = useState<string | null>(null);
   const [showShareToast, setShowShareToast] = useState(false);
   const [activeStep, setActiveStep] = useState(1);
+  const [ctaSubmitted, setCtaSubmitted] = useState(false);
 
   useEffect(() => {
     if (!aid) {
@@ -221,11 +222,11 @@ function PreviewContent() {
 
                   {/* Screenshot Placeholder */}
                   <div className="aspect-video bg-zinc-950 flex items-center justify-center border-b border-zinc-800">
-                    {activeStepData.screenshotBase64 ? (
+                    {(activeStepData.screenshotBase64 || activeStepData.screenshotUrl) ? (
                       <img
-                        src={`data:image/png;base64,${activeStepData.screenshotBase64}`}
+                        src={activeStepData.screenshotUrl || `data:image/png;base64,${activeStepData.screenshotBase64}`}
                         alt={`Step ${activeStepData.stepNumber}`}
-                        className="w-full h-full object-contain"
+                        className="w-full h-full object-cover object-top"
                       />
                     ) : (
                       <div className="text-center text-zinc-600">
@@ -397,11 +398,11 @@ function PreviewContent() {
 
                     {/* CTA Button */}
                     <button
-                      className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-opacity hover:opacity-90 active:scale-[0.98]"
-                      style={{ backgroundColor: brandColors.primaryColor }}
-                      onClick={() => alert('🎉 This is a TikTok Instant Form demo — in production, this submits to TikTok Lead Generation!')}
+                      className="w-full py-3 rounded-lg font-semibold text-white text-sm transition-all hover:opacity-90 active:scale-[0.98]"
+                      style={{ backgroundColor: ctaSubmitted ? '#22c55e' : brandColors.primaryColor }}
+                      onClick={() => setCtaSubmitted(true)}
                     >
-                      {generatedCopy.tiktokCta}
+                      {ctaSubmitted ? '✓ Lead Submitted to TikTok!' : generatedCopy.tiktokCta}
                     </button>
 
                     {/* Disclaimer */}

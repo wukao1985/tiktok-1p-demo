@@ -119,6 +119,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.sonobello.com/consultation/',
       title: 'Sono Bello — Body Contouring & Liposuction',
+      screenshotUrl: '/sonobello-step1.png',
       fields: [],
       ctaText: 'See If You Qualify',
       stepType: 'landing'
@@ -332,6 +333,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
       stepNumber: 1,
       url: 'https://www.opendoor.com',
       title: 'Opendoor — Sell Your Home',
+      screenshotUrl: '/opendoor-step1.png',
       fields: [],
       ctaText: 'Get Your Offer',
       stepType: 'landing'
