@@ -137,7 +137,7 @@ const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
 const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
 const NAV_TIMEOUT = 8000;
 const POST_CLICK_SETTLE_TIMEOUT = 5000;
-const SCREENSHOT_TIMEOUT = 2000;
+const SCREENSHOT_TIMEOUT = 5000;
 const STEP_DELAY_MIN_MS = 500;
 const STEP_DELAY_MAX_MS = 1500;
 const MAX_JOURNEY_STEPS = 4;
@@ -215,21 +215,19 @@ function isConfirmationUrl(url: string): boolean {
 }
 
 function getRecoveryStartUrls(url: string) {
-  const candidates = [url];
-
   try {
     const parsedUrl = new URL(url);
     if (
       parsedUrl.hostname.includes('sonobello.com') &&
       parsedUrl.pathname.startsWith('/consultation')
     ) {
-      candidates.push('https://www.sonobello.com/');
+      return ['https://www.sonobello.com/'];
     }
   } catch {
     // Fall back to the original URL only.
   }
 
-  return Array.from(new Set(candidates));
+  return [url];
 }
 
 function getRemainingBudget(deadlineMs: number, bufferMs = 0) {
@@ -463,15 +461,26 @@ async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
   }
 
   try {
-    const screenshotPromise = page.screenshot({
-      type: 'png',
-      fullPage: true,
-      encoding: 'base64',
-    });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Screenshot timeout')), timeoutMs)
-    );
-    const screenshotBase64 = await Promise.race([screenshotPromise, timeoutPromise]) as string;
+    const takeScreenshot = async (fullPage: boolean) => {
+      const screenshotPromise = page.screenshot({
+        type: 'png',
+        fullPage,
+        encoding: 'base64',
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Screenshot timeout')), timeoutMs)
+      );
+
+      return await Promise.race([screenshotPromise, timeoutPromise]) as string;
+    };
+
+    let screenshotBase64: string;
+
+    try {
+      screenshotBase64 = await takeScreenshot(true);
+    } catch {
+      screenshotBase64 = await takeScreenshot(false);
+    }
 
     return {
       screenshotBase64,
