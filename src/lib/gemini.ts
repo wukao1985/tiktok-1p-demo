@@ -68,6 +68,12 @@ interface GeminiCallOptions {
   deadlineMs?: number;
 }
 
+interface GeminiRequestConfig {
+  headers: Record<string, string>;
+  providerName: 'Gemini API' | 'Vertex AI';
+  url: string;
+}
+
 export class LLMTimeoutError extends Error {
   readonly code = 'LLM_TIMEOUT';
   readonly timeoutMs: number;
@@ -159,6 +165,14 @@ function getVertexEndpoint(projectId: string, location: string) {
   return `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 }
 
+function getGeminiApiKey() {
+  return process.env.GEMINI_API_KEY?.trim() || '';
+}
+
+function getGeminiApiEndpoint(apiKey: string) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${VERTEX_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+}
+
 function getRemainingGeminiBudget(deadlineMs?: number) {
   if (deadlineMs === undefined) {
     return ANALYSIS_GEMINI_BUDGET_MS;
@@ -221,6 +235,35 @@ async function getVertexAccessToken(projectId: string, deadlineMs?: number) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Vertex AI authentication failed: ${message}`);
   }
+}
+
+async function getGeminiRequestConfig(
+  options: GeminiCallOptions = {}
+): Promise<GeminiRequestConfig> {
+  const apiKey = getGeminiApiKey();
+
+  if (apiKey) {
+    return {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      providerName: 'Gemini API',
+      url: getGeminiApiEndpoint(apiKey),
+    };
+  }
+
+  const projectId = getRequiredVertexEnv('GOOGLE_CLOUD_PROJECT_ID');
+  const location = getRequiredVertexEnv('GOOGLE_CLOUD_LOCATION');
+  const accessToken = await getVertexAccessToken(projectId, options.deadlineMs);
+
+  return {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    providerName: 'Vertex AI',
+    url: getVertexEndpoint(projectId, location),
+  };
 }
 
 const ANALYSIS_PROMPT = `You are an expert web form analyzer and TikTok ads copywriter. Extract structured form field data from the provided multi-step HTML journey AND generate optimized copy in a single response.
@@ -334,9 +377,7 @@ function parseJsonResponse<T>(text: string): T {
 }
 
 async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) {
-  const projectId = getRequiredVertexEnv('GOOGLE_CLOUD_PROJECT_ID');
-  const location = getRequiredVertexEnv('GOOGLE_CLOUD_LOCATION');
-  const accessToken = await getVertexAccessToken(projectId, options.deadlineMs);
+  const requestConfig = await getGeminiRequestConfig(options);
   const timeoutMs = getRemainingGeminiBudget(options.deadlineMs);
 
   if (timeoutMs <= 0) {
@@ -347,12 +388,9 @@ async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) 
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(getVertexEndpoint(projectId, location), {
+    const response = await fetch(requestConfig.url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers: requestConfig.headers,
       body: JSON.stringify({
         contents: [
           {
@@ -374,7 +412,7 @@ async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) 
       const responseMessage = responseText ? ` - ${responseText.slice(0, 200)}` : '';
 
       throw new Error(
-        `Vertex AI API error: ${response.status} ${response.statusText}${responseMessage}`
+        `${requestConfig.providerName} API error: ${response.status} ${response.statusText}${responseMessage}`
       );
     }
 
@@ -382,7 +420,9 @@ async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!text) {
-      throw new Error('Unexpected response format from Vertex AI');
+      throw new Error(
+        `Unexpected response format from ${requestConfig.providerName}`
+      );
     }
 
     return text as string;
