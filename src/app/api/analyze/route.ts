@@ -143,6 +143,22 @@ function withPrimaryScreenshotApiUrl(data: AnalyzeResponseData) {
   };
 }
 
+function withoutPersistedArtifactUrls(data: AnalyzeResponseData) {
+  return {
+    ...data,
+    screenshot: data.screenshot.status === 'ok'
+      ? {
+          ...data.screenshot,
+          url: undefined,
+        }
+      : data.screenshot,
+    journey: data.journey.map((step) => ({
+      ...step,
+      screenshotUrl: undefined,
+    })),
+  };
+}
+
 function getPublicAssetPath(assetUrl: string) {
   return path.join(process.cwd(), 'public', assetUrl.replace(/^\//, ''));
 }
@@ -545,11 +561,11 @@ export async function POST(request: NextRequest) {
       );
     } catch (kvError) {
       if (isRouteTimeoutError(kvError, 'finalization')) {
-        return finalizationTimeoutResponse(requestId, rateLimitHeaders);
+        result = withoutPersistedArtifactUrls(result);
+      } else {
+        console.error('KV write error:', kvError);
+        result = withoutPersistedArtifactUrls(result);
       }
-
-      console.error('KV write error:', kvError);
-      return kvWriteErrorResponse(requestId, rateLimitHeaders);
     }
 
     return jsonResponse(
