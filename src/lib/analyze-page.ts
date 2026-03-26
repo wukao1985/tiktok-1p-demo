@@ -160,13 +160,25 @@ const FIELD_SELECTORS = [
 ];
 const IGNORED_SELECTORS = [
   '[class*="cookie"]',
+  '[class*="Cookie"]',
   '[class*="consent"]',
+  '[class*="Consent"]',
   '[class*="gdpr"]',
+  '[class*="GDPR"]',
+  '[class*="privacy"]',
   '[class*="newsletter"]',
+  '[class*="subscribe"]',
+  '[id*="cookie"]',
+  '[id*="consent"]',
+  '[id*="gdpr"]',
   '[type="search"]',
   '[name*="search"]',
+  '[placeholder*="search"]',
   'nav input',
   'header input',
+  'footer input',
+  '[aria-label*="cookie"]',
+  '[aria-label*="Cookie"]',
 ];
 const FIELD_SELECTOR_QUERY = FIELD_SELECTORS.join(', ');
 
