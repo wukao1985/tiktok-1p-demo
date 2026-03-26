@@ -1,7 +1,7 @@
 // lib/analyze-page.ts
 
 import puppeteer from 'puppeteer-core';
-import type { Page, ElementHandle } from 'puppeteer-core';
+import type { Page, ElementHandle, Frame } from 'puppeteer-core';
 import chromium from '@sparticuz/chromium';
 import { analyzeWithGemini } from './gemini';
 import {
@@ -46,13 +46,61 @@ class AnalyzeFailure extends Error {
   }
 }
 
-const CTA_KEYWORDS = [
-  'get started', 'book', 'schedule', 'consult', 'free', 'start', 'contact',
-  'apply', 'sign up', 'try', 'learn more', 'see', 'get', 'continue',
-  'next', 'submit', 'request', 'quote', 'estimate', 'offer'
+const STEALTH_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+const STEALTH_VIEWPORT = {
+  width: 1440,
+  height: 900,
+  deviceScaleFactor: 1,
+  isMobile: false,
+  hasTouch: false,
+};
+const CTA_PRIORITY_KEYWORDS = [
+  'get started',
+  'book now',
+  'free consultation',
+  'get a cash offer',
+  'check eligibility',
+  'continue',
+  'next',
+  'submit',
 ];
-
+const CTA_FALLBACK_KEYWORDS = [
+  'book',
+  'schedule',
+  'consult',
+  'request',
+  'quote',
+  'estimate',
+  'offer',
+  'apply',
+  'start',
+];
 const NEXT_KEYWORDS = ['next', 'continue', 'proceed', 'step', 'forward'];
+const CTA_SELECTOR =
+  'button, a[href], a[role="button"], input[type="button"], input[type="submit"], [role="button"]';
+const COOKIE_BANNER_SELECTORS = [
+  '[id*="cookie"]',
+  '[class*="cookie"]',
+  '[id*="consent"]',
+  '[class*="consent"]',
+  '[id*="gdpr"]',
+  '[class*="gdpr"]',
+  '[aria-label*="cookie"]',
+  '[aria-label*="consent"]',
+];
+const COOKIE_ACTION_KEYWORDS = [
+  'accept all',
+  'accept',
+  'agree',
+  'allow all',
+  'allow',
+  'ok',
+  'got it',
+  'dismiss',
+  'close',
+];
+const COOKIE_CONTEXT_KEYWORDS = ['cookie', 'consent', 'gdpr', 'privacy'];
 const BOT_BLOCK_KEYWORDS = [
   'captcha',
   'verify you are human',
@@ -88,7 +136,14 @@ const NOT_FOUND_MESSAGE_PATTERNS = [
 const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
 const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
 const NAV_TIMEOUT = 3000;
+const POST_CLICK_SETTLE_TIMEOUT = 5000;
 const SCREENSHOT_TIMEOUT = 2000;
+const STEP_DELAY_MIN_MS = 500;
+const STEP_DELAY_MAX_MS = 1500;
+const MAX_JOURNEY_STEPS = 4;
+const MIN_REAL_FORM_FIELDS = 2;
+const HTML_CAPTURE_LIMIT = 50000;
+const GEMINI_HTML_LIMIT = 15000;
 const FIELD_SELECTORS = [
   'input[type="text"]:not([name*="search"]):not([placeholder*="search"])',
   'input[type="email"]',
@@ -118,6 +173,16 @@ interface PrimaryFormExtractionResult {
   shouldRaiseUncertain: boolean;
 }
 
+interface ExtractFieldOptions {
+  suppressUncertain?: boolean;
+}
+
+interface CtaMatch {
+  element: ElementHandle<Element> | null;
+  text: string;
+  isNextStepCta: boolean;
+}
+
 function isConfirmationUrl(url: string): boolean {
   const lowerUrl = url.toLowerCase();
   return ['thank', 'confirm', 'success', 'complete', 'done'].some(keyword =>
@@ -131,6 +196,36 @@ function getRemainingBudget(deadlineMs: number, bufferMs = 0) {
 
 function getBoundedTimeout(deadlineMs: number, maxTimeoutMs: number, bufferMs = 0) {
   return Math.min(maxTimeoutMs, Math.max(0, getRemainingBudget(deadlineMs, bufferMs)));
+}
+
+function getRandomInt(min: number, max: number) {
+  return Math.floor(Math.random() * ((max - min) + 1)) + min;
+}
+
+async function waitWithSignal(timeoutMs: number, signal?: AbortSignal) {
+  if (timeoutMs <= 0 || signal?.aborted) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function waitForHumanDelay(deadlineMs: number, signal?: AbortSignal) {
+  const timeoutMs = Math.min(
+    getRandomInt(STEP_DELAY_MIN_MS, STEP_DELAY_MAX_MS),
+    getBoundedTimeout(deadlineMs, STEP_DELAY_MAX_MS, 100)
+  );
+
+  await waitWithSignal(timeoutMs, signal);
 }
 
 function createAnalyzeFailure(code: AnalyzeFailureCode) {
@@ -257,7 +352,10 @@ async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
   }
 }
 
-async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
+async function extractFieldsFromPage(
+  page: Page,
+  options: ExtractFieldOptions = {}
+): Promise<ExtractedField[]> {
   const result = await page.evaluate(
     ({ fieldSelectorQuery, ignoredSelectors }) => {
       const isFormControl = (
@@ -328,7 +426,7 @@ async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
 
       if (formCandidates.length === 1) {
         selectedContainer = formCandidates[0];
-      } else if (formCandidates.length > 1 && !shouldRaiseUncertain) {
+      } else if (formCandidates.length > 1) {
         selectedContainer = scoredForms[0]?.form ?? null;
       } else if (formCandidates.length === 0) {
         const documentFields = getSupportedFields(document);
@@ -447,7 +545,7 @@ async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
         const selector =
           tagName +
           (name ? `[name="${name}"]` : '') +
-          (id ? `#${id}` : '');
+          (id ? `#${id}` : `:nth-of-type(${index + 1})`);
 
         if (seenSelectors.has(selector)) {
           return;
@@ -482,228 +580,518 @@ async function extractFieldsFromPage(page: Page): Promise<ExtractedField[]> {
     }
   ) as PrimaryFormExtractionResult;
 
-  if (result.shouldRaiseUncertain) {
+  if (result.shouldRaiseUncertain && !options.suppressUncertain) {
     throw createAnalyzeFailure('PRIMARY_FORM_UNCERTAIN');
   }
 
   return result.fields;
 }
 
-async function findCTAButton(page: Page): Promise<{ element: ElementHandle<Element> | null; text: string }> {
-  const buttons = await page.$$('button, a[role="button"], input[type="submit"], .btn, [class*="button"]');
+async function applyStealthSettings(page: Page) {
+  await page.setViewport(STEALTH_VIEWPORT);
+  await page.setUserAgent(STEALTH_USER_AGENT);
+  await page.setExtraHTTPHeaders({
+    'accept-language': 'en-US,en;q=0.9',
+  });
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+    });
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+    Object.defineProperty(navigator, 'platform', {
+      get: () => 'MacIntel',
+    });
+    Object.defineProperty(navigator, 'vendor', {
+      get: () => 'Google Inc.',
+    });
 
-  for (const button of buttons) {
-    const text = await page.evaluate(el => el.textContent?.trim() || el.getAttribute('value') || '', button);
-    const lowerText = text.toLowerCase();
-
-    if (CTA_KEYWORDS.some(keyword => lowerText.includes(keyword))) {
-      return { element: button, text };
-    }
-  }
-
-  // Fallback: return first button with text
-  for (const button of buttons) {
-    const text = await page.evaluate(el => el.textContent?.trim() || el.getAttribute('value') || '', button);
-    if (text.length > 0 && text.length < 100) {
-      return { element: button, text };
-    }
-  }
-
-  return { element: null, text: '' };
+    const chromeWindow = window as Window & {
+      chrome?: {
+        runtime?: Record<string, unknown>;
+      };
+    };
+    chromeWindow.chrome = chromeWindow.chrome || { runtime: {} };
+  });
 }
 
-async function scrapeJourney(url: string, scrapeDeadlineMs: number): Promise<ScrapedStep[]> {
-  const steps: ScrapedStep[] = [];
-  let browser = null;
-
+async function dismissCookieConsentInFrame(frame: Frame) {
   try {
-    // Launch browser with @sparticuz/chromium for serverless compatibility
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: { width: 1280, height: 900 },
-      executablePath: await chromium.executablePath(),
-      headless: true,
-    });
-
-    const page = await browser.newPage();
-
-    // Set user agent to avoid bot detection
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    if (getRemainingBudget(scrapeDeadlineMs) <= 0) {
-      return steps;
-    }
-
-    // Step 1: Land on the page
-    await navigateToLandingPage(page, url, scrapeDeadlineMs);
-    await ensureNotBlocked(page);
-
-    // Handle consent banners
-    try {
-      await page.$$eval("button", buttons => {
-        const acceptBtn = buttons.find(b => /accept|agree|ok|accept all/i.test(b.innerText));
-        if (acceptBtn) acceptBtn.click();
-      });
-      await new Promise(r => setTimeout(r, 300));
-    } catch {}
-
-    // Hide common banner elements
-    await page.evaluate(() => {
-      const bannerSelectors = ['#cookie-banner', '.cookie-consent', '#gdpr-banner', '.gdpr-banner'];
-      bannerSelectors.forEach(sel => {
-        const el = document.querySelector(sel);
-        if (el && el instanceof HTMLElement) el.style.display = 'none';
-      });
-    });
-
-    // Step 1: Capture landing page
-    const step1Fields = await extractFieldsFromPage(page);
-    const step1Title = await page.evaluate(() => document.title);
-    const step1Url = page.url();
-    const {
-      screenshotBase64: step1Screenshot,
-      screenshotStatus: step1ScreenshotStatus,
-    } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
-
-    // Find CTA on step 1
-    const { element: ctaButton, text: ctaText } = await findCTAButton(page);
-
-    steps.push({
-      html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
-      title: step1Title,
-      url: step1Url,
-      screenshotBase64: step1Screenshot,
-      screenshotStatus: step1ScreenshotStatus,
-      fields: step1Fields,
-      ctaText: ctaText || undefined,
-      stepType: 'landing'
-    });
-
-    // Check timeout
-    if (getRemainingBudget(scrapeDeadlineMs, 250) <= 0) {
-      return steps;
-    }
-
-    // Step 2: Always attempt the primary CTA to discover subsequent steps.
-    if (ctaButton) {
-      try {
-        await ctaButton.click();
-        const postClickWait = getBoundedTimeout(scrapeDeadlineMs, 1000, 250);
-        if (postClickWait > 0) {
-          await new Promise((resolve) => setTimeout(resolve, postClickWait));
-        }
-
-        // Check if URL changed (navigation) or modal appeared
-        const step2Url = page.url();
-        const hasModal = await page.evaluate(() => {
-          const modal = document.querySelector('[role="dialog"], .modal, [class*="modal"], [class*="popup"]');
-          return !!modal;
-        });
-
-        await ensureNotBlocked(page);
-
-        if (step2Url !== step1Url || hasModal) {
-          const step2Fields = await extractFieldsFromPage(page);
-          const step2Title = await page.evaluate(() => document.title);
-          const {
-            screenshotBase64: step2Screenshot,
-            screenshotStatus: step2ScreenshotStatus,
-          } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
-
-          // Check for multi-step indicators
-          const hasNextButton = await page.evaluate(() => {
-            const buttons = document.querySelectorAll('button, a, input[type="submit"]');
-            return Array.from(buttons).some(b => {
-              const text = b.textContent?.toLowerCase() || '';
-              return ['next', 'continue', 'step'].some(k => text.includes(k));
-            });
-          });
-
-          const stepType = hasNextButton ? 'multistep' : (step2Fields.length > 0 ? 'form' : 'landing');
-
-          steps.push({
-            html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
-            title: step2Title,
-            url: step2Url,
-            screenshotBase64: step2Screenshot,
-            screenshotStatus: step2ScreenshotStatus,
-            fields: step2Fields,
-            ctaText: ctaText || undefined,
-            stepType
-          });
-
-          // Handle multi-step forms (max 4 sub-steps)
-          let subStepCount = 0;
-          const maxSubSteps = 4;
-
-          while (subStepCount < maxSubSteps && getRemainingBudget(scrapeDeadlineMs, 200) > 0) {
-            const { element: nextButton } = await findCTAButton(page);
-            if (!nextButton) break;
-
-            const nextText = await page.evaluate(el => el.textContent?.toLowerCase() || '', nextButton);
-            if (!NEXT_KEYWORDS.some(k => nextText.includes(k))) break;
-
-            await nextButton.click();
-            const subStepWait = getBoundedTimeout(scrapeDeadlineMs, 800, 200);
-            if (subStepWait > 0) {
-              await new Promise((resolve) => setTimeout(resolve, subStepWait));
-            }
-
-            await ensureNotBlocked(page);
-
-            // Check for confirmation page
-            const currentUrl = page.url();
-            if (isConfirmationUrl(currentUrl)) {
-              const confirmFields = await extractFieldsFromPage(page);
-              steps.push({
-                html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
-                title: await page.evaluate(() => document.title),
-                url: currentUrl,
-                screenshotBase64: null,
-                screenshotStatus: 'failed',
-                fields: confirmFields,
-                stepType: 'confirmation'
-              });
-              break;
-            }
-
-            const stepFields = await extractFieldsFromPage(page);
-            if (stepFields.length > 0) {
-              const {
-                screenshotBase64: stepScreenshot,
-                screenshotStatus: stepScreenshotStatus,
-              } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
-
-              steps.push({
-                html: await page.evaluate(() => document.body?.innerHTML?.slice(0, 50000) || ''),
-                title: await page.evaluate(() => document.title),
-                url: currentUrl,
-                screenshotBase64: stepScreenshot,
-                screenshotStatus: stepScreenshotStatus,
-                fields: stepFields,
-                stepType: 'multistep'
-              });
-            }
-
-            subStepCount++;
+    return await frame.evaluate(
+      ({ bannerSelectors, actionKeywords, contextKeywords }) => {
+        const clickableSelector =
+          'button, [role="button"], a, input[type="button"], input[type="submit"]';
+        const bannerSelector = bannerSelectors.join(', ');
+        const getText = (element: Element) =>
+          (
+            element.textContent ||
+            element.getAttribute('aria-label') ||
+            element.getAttribute('value') ||
+            ''
+          )
+            .trim()
+            .replace(/\s+/g, ' ');
+        const isVisible = (element: Element) => {
+          if (!(element instanceof HTMLElement)) {
+            return false;
           }
-        }
-      } catch (error) {
-        if (
-          isAnalyzeFailure(error, 'SCRAPING_BLOCKED') ||
-          isAnalyzeFailure(error, 'PAGE_NOT_FOUND') ||
-          isAnalyzeFailure(error, 'PRIMARY_FORM_UNCERTAIN')
-        ) {
-          throw error;
+
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden'
+          );
+        };
+        const hasCookieContext = (element: Element) => {
+          if (bannerSelector && element.closest(bannerSelector)) {
+            return true;
+          }
+
+          let current: Element | null = element;
+          let depth = 0;
+          while (current && depth < 4) {
+            const text = (current.textContent || '').toLowerCase();
+            if (contextKeywords.some((keyword) => text.includes(keyword))) {
+              return true;
+            }
+            current = current.parentElement;
+            depth += 1;
+          }
+
+          return false;
+        };
+
+        const candidates = Array.from(document.querySelectorAll(clickableSelector))
+          .map((element) => {
+            const text = getText(element);
+            const lowerText = text.toLowerCase();
+            const actionIndex = actionKeywords.findIndex((keyword) => lowerText.includes(keyword));
+            const cookieContext = hasCookieContext(element);
+
+            if (!text || !isVisible(element) || (actionIndex === -1 && !cookieContext)) {
+              return null;
+            }
+
+            const score =
+              (cookieContext ? 100 : 0) +
+              (actionIndex === -1 ? 0 : 80 - (actionIndex * 5)) +
+              (lowerText.includes('accept') ? 20 : 0);
+
+            return { element, score };
+          })
+          .filter((candidate): candidate is { element: Element; score: number } => Boolean(candidate))
+          .sort((a, b) => b.score - a.score);
+
+        const target = candidates[0]?.element;
+        if (!target || !(target instanceof HTMLElement)) {
+          return false;
         }
 
-        // Continue with what we have
+        target.click();
+        return true;
+      },
+      {
+        bannerSelectors: COOKIE_BANNER_SELECTORS,
+        actionKeywords: COOKIE_ACTION_KEYWORDS,
+        contextKeywords: COOKIE_CONTEXT_KEYWORDS,
+      }
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function hideCookieBanners(page: Page) {
+  try {
+    await page.evaluate((selectors) => {
+      for (const selector of selectors) {
+        document.querySelectorAll(selector).forEach((element) => {
+          if (element instanceof HTMLElement) {
+            element.style.display = 'none';
+            element.style.visibility = 'hidden';
+            element.style.pointerEvents = 'none';
+          }
+        });
+      }
+    }, COOKIE_BANNER_SELECTORS);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+async function dismissCookieConsent(
+  page: Page,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let dismissed = false;
+
+    for (const frame of page.frames()) {
+      if (await dismissCookieConsentInFrame(frame)) {
+        dismissed = true;
+        break;
       }
     }
 
-    return steps;
+    if (!dismissed) {
+      break;
+    }
+
+    await waitWithSignal(getBoundedTimeout(scrapeDeadlineMs, 350, 50), signal);
+  }
+
+  await hideCookieBanners(page);
+}
+
+async function getCurrentStepHtml(page: Page) {
+  return page.evaluate(
+    (captureLimit) => document.body?.innerHTML?.slice(0, captureLimit) || '',
+    HTML_CAPTURE_LIMIT
+  );
+}
+
+async function getPageFingerprint(page: Page) {
+  return page.evaluate(
+    ({ fieldSelectorQuery }) =>
+      JSON.stringify({
+        url: window.location.href,
+        title: document.title,
+        text: (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 400),
+        fieldCount: document.querySelectorAll(fieldSelectorQuery).length,
+        dialogCount: document.querySelectorAll(
+          '[role="dialog"], .modal, [class*="modal"], [class*="popup"]'
+        ).length,
+        htmlLength: document.body?.innerHTML.length || 0,
+      }),
+    { fieldSelectorQuery: FIELD_SELECTOR_QUERY }
+  );
+}
+
+async function waitForInteractionToSettle(
+  page: Page,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+) {
+  const timeoutMs = getBoundedTimeout(scrapeDeadlineMs, POST_CLICK_SETTLE_TIMEOUT, 150);
+  if (timeoutMs <= 0) {
+    return;
+  }
+
+  await Promise.race([
+    page
+      .waitForNavigation({
+        waitUntil: 'networkidle2',
+        timeout: timeoutMs,
+      })
+      .catch(() => undefined),
+    page
+      .waitForNetworkIdle({
+        idleTime: 500,
+        timeout: Math.min(timeoutMs, 1500),
+      })
+      .catch(() => undefined),
+    waitWithSignal(Math.min(timeoutMs, 1200), signal),
+  ]);
+
+  await waitForHumanDelay(scrapeDeadlineMs, signal);
+}
+
+async function clickElementHandle(
+  page: Page,
+  element: ElementHandle<Element>,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+) {
+  try {
+    await element.evaluate((node) =>
+      node.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' })
+    );
+    await waitWithSignal(getBoundedTimeout(scrapeDeadlineMs, 150, 50), signal);
+
+    try {
+      await element.click({ delay: getRandomInt(40, 120) });
+    } catch {
+      await element.evaluate((node) => {
+        if (node instanceof HTMLElement) {
+          node.click();
+        }
+      });
+    }
+
+    await waitForInteractionToSettle(page, scrapeDeadlineMs, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findCTAButton(page: Page): Promise<CtaMatch> {
+  const candidates = await page.$$(CTA_SELECTOR);
+  let bestMatch:
+    | (CtaMatch & {
+        score: number;
+      })
+    | null = null;
+
+  for (const candidate of candidates) {
+    const metadata = await page.evaluate(
+      (
+        element,
+        { bannerSelectors, priorityKeywords, fallbackKeywords, nextKeywords }
+      ) => {
+        const getText = (node: Element) =>
+          (
+            node.textContent ||
+            node.getAttribute('aria-label') ||
+            node.getAttribute('value') ||
+            ''
+          )
+            .trim()
+            .replace(/\s+/g, ' ');
+        const isVisible = (node: Element) => {
+          if (!(node instanceof HTMLElement)) {
+            return false;
+          }
+
+          const rect = node.getBoundingClientRect();
+          const style = window.getComputedStyle(node);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden'
+          );
+        };
+        const bannerSelector = bannerSelectors.join(', ');
+        const text = getText(element);
+        const lowerText = text.toLowerCase();
+        const inBanner = bannerSelector ? Boolean(element.closest(bannerSelector)) : false;
+        const disabled =
+          (element instanceof HTMLButtonElement ||
+            element instanceof HTMLInputElement ||
+            element instanceof HTMLSelectElement ||
+            element instanceof HTMLTextAreaElement) &&
+          element.disabled;
+
+        if (
+          !text ||
+          text.length > 120 ||
+          !isVisible(element) ||
+          disabled ||
+          inBanner ||
+          /cookie|consent|privacy|newsletter/.test(lowerText)
+        ) {
+          return null;
+        }
+
+        const priorityIndex = priorityKeywords.findIndex((keyword) => lowerText.includes(keyword));
+        const fallbackIndex = fallbackKeywords.findIndex((keyword) => lowerText.includes(keyword));
+        const isNextStepCta = nextKeywords.some((keyword) => lowerText.includes(keyword));
+
+        if (priorityIndex === -1 && fallbackIndex === -1 && !isNextStepCta) {
+          return null;
+        }
+
+        let score = 0;
+
+        if (priorityIndex !== -1) {
+          score += 220 - (priorityIndex * 10);
+        }
+        if (fallbackIndex !== -1) {
+          score += 120 - (fallbackIndex * 5);
+        }
+        if (isNextStepCta) {
+          score += 90;
+        }
+        if (element.closest('form, [role="dialog"], main, section, article')) {
+          score += 20;
+        }
+        if (element.closest('nav, header, footer')) {
+          score -= 50;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.top >= 0 && rect.top <= window.innerHeight * 1.5) {
+          score += 10;
+        }
+
+        return {
+          text,
+          score,
+          isNextStepCta,
+        };
+      },
+      candidate,
+      {
+        bannerSelectors: COOKIE_BANNER_SELECTORS,
+        priorityKeywords: CTA_PRIORITY_KEYWORDS,
+        fallbackKeywords: CTA_FALLBACK_KEYWORDS,
+        nextKeywords: NEXT_KEYWORDS,
+      }
+    );
+
+    if (!metadata) {
+      continue;
+    }
+
+    const isInViewport = await candidate
+      .isIntersectingViewport({ threshold: 0 })
+      .catch(() => false);
+    const score = metadata.score + (isInViewport ? 10 : 0);
+
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = {
+        element: candidate,
+        text: metadata.text,
+        isNextStepCta: metadata.isNextStepCta,
+        score,
+      };
+    }
+  }
+
+  if (!bestMatch) {
+    return {
+      element: null,
+      text: '',
+      isNextStepCta: false,
+    };
+  }
+
+  return {
+    element: bestMatch.element,
+    text: bestMatch.text,
+    isNextStepCta: bestMatch.isNextStepCta,
+  };
+}
+
+function getStepType(url: string, fields: ExtractedField[], ctaMatch?: CtaMatch): JourneyStep['stepType'] {
+  if (isConfirmationUrl(url)) {
+    return 'confirmation';
+  }
+
+  if (fields.length > 0 && ctaMatch?.isNextStepCta) {
+    return 'multistep';
+  }
+
+  if (fields.length > 0) {
+    return 'form';
+  }
+
+  return 'landing';
+}
+
+async function captureStep(page: Page, scrapeDeadlineMs: number, ctaMatch?: CtaMatch) {
+  const fields = await extractFieldsFromPage(page, { suppressUncertain: true });
+  const title = await page.title();
+  const url = page.url();
+  const html = await getCurrentStepHtml(page);
+  const { screenshotBase64, screenshotStatus } = await takeScreenshotWithBudget(page, scrapeDeadlineMs);
+
+  return {
+    html,
+    title,
+    url,
+    screenshotBase64,
+    screenshotStatus,
+    fields,
+    ctaText: ctaMatch?.text || undefined,
+    stepType: getStepType(url, fields, ctaMatch),
+  } satisfies ScrapedStep;
+}
+
+async function navigateMultiStepJourney(
+  page: Page,
+  startUrl: string,
+  signal: AbortSignal | undefined,
+  budgetMs: number
+): Promise<ScrapedStep[]> {
+  const steps: ScrapedStep[] = [];
+  const seenFingerprints = new Set<string>();
+
+  await navigateToLandingPage(page, startUrl, budgetMs);
+  await ensureNotBlocked(page);
+  await dismissCookieConsent(page, budgetMs, signal);
+
+  for (let stepIndex = 0; stepIndex < MAX_JOURNEY_STEPS; stepIndex += 1) {
+    if (signal?.aborted || getRemainingBudget(budgetMs, 200) <= 0) {
+      break;
+    }
+
+    await ensureNotBlocked(page);
+    await dismissCookieConsent(page, budgetMs, signal);
+
+    const ctaMatch = stepIndex < (MAX_JOURNEY_STEPS - 1)
+      ? await findCTAButton(page)
+      : { element: null, text: '', isNextStepCta: false };
+    const currentFingerprint = await getPageFingerprint(page);
+
+    if (!seenFingerprints.has(currentFingerprint)) {
+      seenFingerprints.add(currentFingerprint);
+      steps.push(await captureStep(page, budgetMs, ctaMatch));
+    }
+
+    const currentStep = steps[steps.length - 1];
+    if (
+      !currentStep ||
+      currentStep.fields.length >= MIN_REAL_FORM_FIELDS ||
+      currentStep.stepType === 'confirmation' ||
+      !ctaMatch.element
+    ) {
+      break;
+    }
+
+    const clicked = await clickElementHandle(page, ctaMatch.element, budgetMs, signal);
+    if (!clicked) {
+      break;
+    }
+
+    await ensureNotBlocked(page);
+    await dismissCookieConsent(page, budgetMs, signal);
+
+    const nextFingerprint = await getPageFingerprint(page);
+    if (nextFingerprint === currentFingerprint || seenFingerprints.has(nextFingerprint)) {
+      break;
+    }
+  }
+
+  return steps;
+}
+
+async function scrapeJourney(
+  url: string,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+): Promise<ScrapedStep[]> {
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+
+  try {
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        '--disable-blink-features=AutomationControlled',
+      ],
+      defaultViewport: STEALTH_VIEWPORT,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+      ignoreDefaultArgs: ['--enable-automation'],
+    });
+
+    const page = await browser.newPage();
+    await applyStealthSettings(page);
+
+    if (getRemainingBudget(scrapeDeadlineMs) <= 0) {
+      return [];
+    }
+
+    return await navigateMultiStepJourney(page, url, signal, scrapeDeadlineMs);
   } finally {
     if (browser) {
       await browser.close();
@@ -711,7 +1099,27 @@ async function scrapeJourney(url: string, scrapeDeadlineMs: number): Promise<Scr
   }
 }
 
-export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
+function getStepSelectionScore(step: ScrapedStep) {
+  const mappedFieldCount = step.fields.filter((field) => field.tiktokFieldType !== 'CUSTOM').length;
+  const requiredFieldCount = step.fields.filter((field) => field.required).length;
+  const uniqueFieldCount = new Set(
+    step.fields.map((field) => `${field.label.toLowerCase()}::${field.tiktokFieldType}`)
+  ).size;
+
+  return (
+    (step.fields.length * 10) +
+    (mappedFieldCount * 4) +
+    (requiredFieldCount * 2) +
+    uniqueFieldCount +
+    (step.stepType === 'form' ? 20 : 0) +
+    (step.stepType === 'multistep' ? 12 : 0)
+  );
+}
+
+export async function analyzePage(
+  url: string,
+  signal?: AbortSignal
+): Promise<AnalyzeResponseData> {
   const startTime = Date.now();
   const analysisDeadlineMs = createAnalysisDeadline(startTime);
   const scrapeDeadlineMs = Math.min(
@@ -722,16 +1130,26 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
 
   try {
     // Reserve the final 5 seconds of the internal deadline for Gemini.
-    const scrapedSteps = await scrapeJourney(url, scrapeDeadlineMs);
+    const scrapedSteps = await scrapeJourney(url, scrapeDeadlineMs, signal);
     if (scrapedSteps.length === 0) {
       throw createAnalyzeFailure('NO_FORM_DETECTED');
     }
 
-    // Analyze all steps with Gemini (use first step screenshot as primary)
-    const firstStepScreenshot = scrapedSteps[0]?.screenshotBase64 || undefined;
-    const allHtml = scrapedSteps.map((s, i) => `\n--- STEP ${i + 1} ---\nTitle: ${s.title}\nURL: ${s.url}\nFields: ${s.fields.length}\nHTML:\n${s.html.slice(0, 15000)}`).join('\n');
+    const bestScrapedStep = scrapedSteps.reduce((bestStep, currentStep) =>
+      getStepSelectionScore(currentStep) > getStepSelectionScore(bestStep)
+        ? currentStep
+        : bestStep
+    );
 
-    const geminiResult = await analyzeWithGemini(allHtml, firstStepScreenshot, url, {
+    const bestStepScreenshot = bestScrapedStep.screenshotBase64 || undefined;
+    const allHtml = scrapedSteps
+      .map(
+        (step, index) =>
+          `\n--- STEP ${index + 1} ---\nTitle: ${step.title}\nURL: ${step.url}\nFields: ${step.fields.length}\nHTML:\n${step.html.slice(0, GEMINI_HTML_LIMIT)}`
+      )
+      .join('\n');
+
+    const geminiResult = await analyzeWithGemini(allHtml, bestStepScreenshot, url, {
       deadlineMs: analysisDeadlineMs,
     });
 
@@ -747,11 +1165,11 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
     }));
 
     // Deduplicate fields across all steps for the consolidated form
-    const allFields = scrapedSteps.flatMap(s => s.fields);
+    const allFields = scrapedSteps.flatMap((step) => step.fields);
     const seenFieldIds = new Set<string>();
     const deduplicatedFields: ExtractedField[] = [];
 
-    allFields.forEach(field => {
+    allFields.forEach((field) => {
       const key = `${field.label.toLowerCase()}_${field.tiktokFieldType}`;
       if (!seenFieldIds.has(key)) {
         seenFieldIds.add(key);
@@ -759,10 +1177,12 @@ export async function analyzePage(url: string): Promise<AnalyzeResponseData> {
       }
     });
 
-    // Use Gemini fields if available, otherwise use scraped fields
-    const extractedFields = (geminiResult.extractedFields && geminiResult.extractedFields.length > 0)
-      ? geminiResult.extractedFields
-      : deduplicatedFields;
+    const extractedFields =
+      bestScrapedStep.fields.length > 0
+        ? bestScrapedStep.fields
+        : geminiResult.extractedFields.length > 0
+          ? geminiResult.extractedFields
+          : deduplicatedFields;
 
     if (extractedFields.length === 0) {
       throw createAnalyzeFailure('NO_FORM_DETECTED');

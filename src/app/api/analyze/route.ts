@@ -510,7 +510,7 @@ export async function POST(request: NextRequest) {
 
     try {
       result = await runWithinRouteBudget(
-        () => analyzePage(normalizedUrl),
+        () => analyzePage(normalizedUrl, controller.signal),
         controller.signal,
         deadlineMs,
         'analysis'
