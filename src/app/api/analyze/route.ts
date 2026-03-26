@@ -474,9 +474,7 @@ export async function POST(request: NextRequest) {
 
     const normalizedUrl = normalizeUrl(url);
     const lowerUrl = normalizedUrl.toLowerCase();
-    const isSonoBello = lowerUrl.includes('sonobello.com');
-    const isOpendoor = lowerUrl.includes('opendoor.com');
-    const useDemoMode = rateLimit.forceDemoMode || isSonoBello || isOpendoor;
+    const useDemoMode = rateLimit.forceDemoMode;
 
     if (useDemoMode) {
       try {
