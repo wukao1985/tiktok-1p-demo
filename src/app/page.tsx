@@ -49,7 +49,7 @@ export default function Home() {
 
   const handleDemoSelect = (demo: 'sonobello' | 'opendoor') => {
     const demoUrls = {
-      sonobello: 'https://www.sonobello.com/consultation/',
+      sonobello: 'https://www.sonobello.com/',
       opendoor: 'https://www.opendoor.com'
     };
     const demoUrl = demoUrls[demo];

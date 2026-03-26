@@ -34,7 +34,7 @@ interface TestCase {
 const TEST_CASES: TestCase[] = [
   {
     label: 'Sono Bello',
-    inputUrl: 'https://www.sonobello.com/consultation/',
+    inputUrl: 'https://www.sonobello.com/',
     minFields: 1,
     expectedScreenshotStatus: 'ok',
   },
