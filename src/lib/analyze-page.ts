@@ -388,30 +388,39 @@ async function navigateToLandingPage(
     return;
   }
 
-  try {
-    const response = await page.goto(url, {
-      waitUntil: 'networkidle2',
-      timeout: navigationTimeout,
-    });
-    const status = response?.status();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await page.goto(url, {
+        waitUntil: 'networkidle2',
+        timeout: navigationTimeout,
+      });
+      const status = response?.status();
 
-    if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
-      throw createAnalyzeFailure('SCRAPING_BLOCKED');
-    }
+      if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
+        throw createAnalyzeFailure('SCRAPING_BLOCKED');
+      }
 
-    if (status && NOT_FOUND_STATUS_CODES.has(status)) {
-      throw createAnalyzeFailure('PAGE_NOT_FOUND');
-    }
-  } catch (error) {
-    if (error instanceof Error && /timeout/i.test(error.message) && await hasLoadedDocument(page)) {
+      if (status && NOT_FOUND_STATUS_CODES.has(status)) {
+        throw createAnalyzeFailure('PAGE_NOT_FOUND');
+      }
+
       await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
       return;
+    } catch (error) {
+      if (error instanceof Error && /timeout/i.test(error.message) && await hasLoadedDocument(page)) {
+        await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
+        return;
+      }
+
+      const normalizedError = normalizeNavigationError(error);
+      if (isAnalyzeFailure(normalizedError, 'PAGE_NOT_FOUND') && attempt === 0) {
+        await waitWithSignal(1000, signal);
+        continue;
+      }
+
+      throw normalizedError;
     }
-
-    throw normalizeNavigationError(error);
   }
-
-  await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
 }
 
 async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
