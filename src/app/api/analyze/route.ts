@@ -269,7 +269,7 @@ function finalizationTimeoutResponse(requestId: string, headers: Record<string, 
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: 'Analysis finalization exceeded the 8-second deadline',
+        message: `Analysis finalization exceeded the ${Math.ceil(ANALYZE_ROUTE_TIMEOUT_MS / 1000)}-second deadline`,
         retryable: true,
       },
       fallbackAvailable: true,

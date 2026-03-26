@@ -142,6 +142,9 @@ const STEP_DELAY_MIN_MS = 500;
 const STEP_DELAY_MAX_MS = 1500;
 const MAX_JOURNEY_STEPS = 4;
 const MIN_REAL_FORM_FIELDS = 2;
+const JS_RENDER_DELAY_MS = 1000;
+const FORM_RENDER_SELECTOR = 'input[type="email"], input[type="tel"]';
+const FORM_RENDER_TIMEOUT_MS = 5000;
 const HTML_CAPTURE_LIMIT = 50000;
 const GEMINI_HTML_LIMIT = 15000;
 const FIELD_SELECTORS = [
@@ -181,6 +184,15 @@ interface CtaMatch {
   element: ElementHandle<Element> | null;
   text: string;
   isNextStepCta: boolean;
+}
+
+interface InputDescriptor {
+  tagName: string;
+  inputType: string;
+  label: string;
+  placeholder?: string;
+  required: boolean;
+  selector: string;
 }
 
 function isConfirmationUrl(url: string): boolean {
@@ -227,6 +239,63 @@ async function waitForHumanDelay(deadlineMs: number, signal?: AbortSignal) {
   );
 
   await waitWithSignal(timeoutMs, signal);
+}
+
+function mapInputDescriptorToField(input: InputDescriptor, index: number): ExtractedField {
+  const normalizedLabel = input.label.trim().replace(/\s+/g, ' ').slice(0, 50) || `Field ${index + 1}`;
+  const lowerLabel = normalizedLabel.toLowerCase();
+  let fieldType: ExtractedField['type'] = 'text';
+  let tiktokFieldType: ExtractedField['tiktokFieldType'] = 'CUSTOM';
+
+  if (
+    input.inputType === 'email' ||
+    lowerLabel.includes('email') ||
+    lowerLabel.includes('e-mail')
+  ) {
+    fieldType = 'email';
+    tiktokFieldType = 'EMAIL';
+  } else if (
+    input.inputType === 'tel' ||
+    lowerLabel.includes('phone') ||
+    lowerLabel.includes('mobile')
+  ) {
+    fieldType = 'tel';
+    tiktokFieldType = 'PHONE_NUMBER';
+  } else if (lowerLabel.includes('zip') || lowerLabel.includes('postal')) {
+    fieldType = 'zip';
+    tiktokFieldType = 'ZIP_POST_CODE';
+  } else if (input.tagName === 'select') {
+    fieldType = 'dropdown';
+  } else if (input.inputType === 'checkbox') {
+    fieldType = 'checkbox';
+  } else if (input.inputType === 'radio') {
+    fieldType = 'radio';
+  } else if (input.inputType === 'date') {
+    fieldType = 'date';
+  } else if (input.inputType === 'number') {
+    fieldType = 'number';
+  }
+
+  if (
+    lowerLabel.includes('full name') ||
+    lowerLabel === 'name' ||
+    (lowerLabel.includes('name') &&
+      (lowerLabel.includes('first') || lowerLabel.includes('last')))
+  ) {
+    tiktokFieldType = 'FULL_NAME';
+  }
+
+  return {
+    id: `field_${index + 1}`,
+    label: normalizedLabel,
+    type: fieldType,
+    placeholder: input.placeholder || undefined,
+    required: input.required,
+    confidence: 0.7,
+    tiktokFieldId: normalizedLabel.toLowerCase().replace(/\s+/g, '_').slice(0, 30),
+    tiktokFieldType,
+    sourceSelector: input.selector,
+  };
 }
 
 function createAnalyzeFailure(code: AnalyzeFailureCode) {
@@ -292,7 +361,28 @@ async function hasLoadedDocument(page: Page) {
   }
 }
 
-async function navigateToLandingPage(page: Page, url: string, scrapeDeadlineMs: number) {
+async function waitForRenderedFormSignals(
+  page: Page,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+) {
+  await waitWithSignal(JS_RENDER_DELAY_MS, signal);
+
+  await page
+    .waitForSelector(FORM_RENDER_SELECTOR, {
+      timeout: FORM_RENDER_TIMEOUT_MS,
+    })
+    .catch(() => undefined);
+
+  await ensureNotBlocked(page);
+}
+
+async function navigateToLandingPage(
+  page: Page,
+  url: string,
+  scrapeDeadlineMs: number,
+  signal?: AbortSignal
+) {
   const navigationTimeout = getBoundedTimeout(scrapeDeadlineMs, NAV_TIMEOUT, 250);
   if (navigationTimeout <= 0) {
     return;
@@ -314,11 +404,14 @@ async function navigateToLandingPage(page: Page, url: string, scrapeDeadlineMs: 
     }
   } catch (error) {
     if (error instanceof Error && /timeout/i.test(error.message) && await hasLoadedDocument(page)) {
+      await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
       return;
     }
 
     throw normalizeNavigationError(error);
   }
+
+  await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
 }
 
 async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
@@ -588,6 +681,90 @@ async function extractFieldsFromPage(
   return result.fields;
 }
 
+async function extractAnyInputFields(page: Page): Promise<ExtractedField[]> {
+  const descriptors = (await page.evaluate(() => {
+    const controls = Array.from(document.querySelectorAll('input, select, textarea')).filter(
+      (
+        element
+      ): element is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement =>
+        element instanceof HTMLInputElement ||
+        element instanceof HTMLSelectElement ||
+        element instanceof HTMLTextAreaElement
+    );
+
+    return controls.flatMap((element, index) => {
+      const tagName = element.tagName.toLowerCase();
+      const inputType =
+        element instanceof HTMLInputElement ? element.type || 'text' : 'text';
+      const rect = element.getBoundingClientRect();
+
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        inputType === 'hidden' ||
+        inputType === 'submit' ||
+        inputType === 'button' ||
+        inputType === 'image'
+      ) {
+        return [];
+      }
+
+      let label = '';
+      const id = 'id' in element ? element.id : '';
+      const name = 'name' in element ? element.name : '';
+      const placeholder =
+        element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+          ? element.placeholder || ''
+          : '';
+
+      if (id) {
+        const labelEl = document.querySelector(`label[for="${id}"]`);
+        if (labelEl) {
+          label = labelEl.textContent || '';
+        }
+      }
+
+      if (!label) {
+        const parentLabel = element.closest('label');
+        if (parentLabel) {
+          label = parentLabel.textContent || '';
+        }
+      }
+
+      if (!label) {
+        label =
+          element.getAttribute('aria-label') ||
+          placeholder ||
+          name ||
+          `Field ${index + 1}`;
+      }
+
+      return [{
+        tagName,
+        inputType,
+        label: label.trim().replace(/\s+/g, ' ').slice(0, 50),
+        placeholder: placeholder || undefined,
+        required: element.hasAttribute('required'),
+        selector:
+          `${tagName}${name ? `[name="${name}"]` : ''}${id ? `#${id}` : `:nth-of-type(${index + 1})`}`,
+      }];
+    });
+  })) as InputDescriptor[];
+
+  if (descriptors.length > 0) {
+    console.info('Fallback input detection:', {
+      url: page.url(),
+      inputs: descriptors.map((input) => ({
+        label: input.label,
+        inputType: input.inputType,
+        selector: input.selector,
+      })),
+    });
+  }
+
+  return descriptors.map(mapInputDescriptorToField);
+}
+
 async function applyStealthSettings(page: Page) {
   await page.setViewport(STEALTH_VIEWPORT);
   await page.setUserAgent(STEALTH_USER_AGENT);
@@ -802,6 +979,7 @@ async function waitForInteractionToSettle(
     waitWithSignal(Math.min(timeoutMs, 1200), signal),
   ]);
 
+  await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
   await waitForHumanDelay(scrapeDeadlineMs, signal);
 }
 
@@ -990,7 +1168,10 @@ function getStepType(url: string, fields: ExtractedField[], ctaMatch?: CtaMatch)
 }
 
 async function captureStep(page: Page, scrapeDeadlineMs: number, ctaMatch?: CtaMatch) {
-  const fields = await extractFieldsFromPage(page, { suppressUncertain: true });
+  let fields = await extractFieldsFromPage(page, { suppressUncertain: true });
+  if (fields.length === 0) {
+    fields = await extractAnyInputFields(page);
+  }
   const title = await page.title();
   const url = page.url();
   const html = await getCurrentStepHtml(page);
@@ -1017,7 +1198,7 @@ async function navigateMultiStepJourney(
   const steps: ScrapedStep[] = [];
   const seenFingerprints = new Set<string>();
 
-  await navigateToLandingPage(page, startUrl, budgetMs);
+  await navigateToLandingPage(page, startUrl, budgetMs, signal);
   await ensureNotBlocked(page);
   await dismissCookieConsent(page, budgetMs, signal);
 
