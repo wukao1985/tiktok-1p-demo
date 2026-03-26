@@ -126,6 +126,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 2,
+      screenshotUrl: '/sonobello-step1.png',
       url: 'https://www.sonobello.com/consultation/qualify',
       title: 'Check Your Eligibility — Sono Bello',
       fields: [
@@ -165,6 +166,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 3,
+      screenshotUrl: '/sonobello-step1.png',
       url: 'https://www.sonobello.com/consultation/details',
       title: 'Complete Your Consultation Request',
       fields: [
@@ -340,6 +342,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 2,
+      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/address',
       title: 'Enter Your Address — Opendoor',
       fields: [
@@ -359,6 +362,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 3,
+      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/contact',
       title: 'Your Contact Information',
       fields: [
@@ -408,6 +412,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 4,
+      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/details',
       title: 'Property Details',
       fields: [
