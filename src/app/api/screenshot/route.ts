@@ -1,6 +1,6 @@
-import { kv } from '@vercel/kv';
 import { NextRequest, NextResponse } from 'next/server';
 
+import { kv } from '@/lib/kv-client';
 import {
   getExpiryMetadataKey,
   isExpired,

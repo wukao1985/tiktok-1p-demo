@@ -1,5 +1,6 @@
-import { kv } from '@vercel/kv';
 import { NextRequest } from 'next/server';
+
+import { kv } from '@/lib/kv-client';
 
 const DEFAULT_LIMIT = Number.parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10', 10);
 const DEFAULT_WINDOW_SECONDS = Number.parseInt(process.env.RATE_LIMIT_WINDOW_SECONDS || '60', 10);

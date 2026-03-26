@@ -1,14 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { NextRequest, NextResponse } from 'next/server';
-import { kv } from '@vercel/kv';
 import { v4 as uuidv4 } from 'uuid';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { analyzePage } from '@/lib/analyze-page';
 import { ANALYZE_ROUTE_TIMEOUT_MS } from '@/lib/analysis-budget';
 import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
 import { isLLMTimeoutError } from '@/lib/gemini';
+import { kv } from '@/lib/kv-client';
 import {
   getExpiryMetadataKey,
   createExpiryMetadata,
