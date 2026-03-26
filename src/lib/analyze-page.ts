@@ -214,6 +214,24 @@ function isConfirmationUrl(url: string): boolean {
   );
 }
 
+function getRecoveryStartUrls(url: string) {
+  const candidates = [url];
+
+  try {
+    const parsedUrl = new URL(url);
+    if (
+      parsedUrl.hostname.includes('sonobello.com') &&
+      parsedUrl.pathname.startsWith('/consultation')
+    ) {
+      candidates.push('https://www.sonobello.com/');
+    }
+  } catch {
+    // Fall back to the original URL only.
+  }
+
+  return Array.from(new Set(candidates));
+}
+
 function getRemainingBudget(deadlineMs: number, bufferMs = 0) {
   return getRemainingAnalysisBudget(deadlineMs, bufferMs);
 }
@@ -1287,14 +1305,35 @@ async function scrapeJourney(
       ignoreDefaultArgs: ['--enable-automation'],
     });
 
-    const page = await browser.newPage();
-    await applyStealthSettings(page);
-
     if (getRemainingBudget(scrapeDeadlineMs) <= 0) {
       return [];
     }
+    const startUrls = getRecoveryStartUrls(url);
+    let lastError: unknown;
 
-    return await navigateMultiStepJourney(page, url, signal, scrapeDeadlineMs);
+    for (let index = 0; index < startUrls.length; index += 1) {
+      const page = await browser.newPage();
+      await applyStealthSettings(page);
+
+      try {
+        return await navigateMultiStepJourney(page, startUrls[index], signal, scrapeDeadlineMs);
+      } catch (error) {
+        lastError = error;
+
+        if (isAnalyzeFailure(error, 'PAGE_NOT_FOUND') && index < (startUrls.length - 1)) {
+          await page.close();
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    return [];
   } finally {
     if (browser) {
       await browser.close();
