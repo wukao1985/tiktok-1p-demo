@@ -57,6 +57,22 @@ function isValidUrl(url: string) {
   }
 }
 
+function getAnalysisTargetUrl(url: string) {
+  try {
+    const parsedUrl = new URL(url);
+    if (
+      parsedUrl.hostname.includes('sonobello.com') &&
+      parsedUrl.pathname.startsWith('/consultation')
+    ) {
+      return 'https://www.sonobello.com/';
+    }
+  } catch {
+    return url;
+  }
+
+  return url;
+}
+
 function jsonResponse(
   payload: unknown,
   init: ResponseInit = {},
@@ -489,6 +505,7 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedUrl = normalizeUrl(url);
+    const analysisTargetUrl = getAnalysisTargetUrl(normalizedUrl);
     const lowerUrl = normalizedUrl.toLowerCase();
     const useDemoMode = rateLimit.forceDemoMode;
 
@@ -526,11 +543,18 @@ export async function POST(request: NextRequest) {
 
     try {
       result = await runWithinRouteBudget(
-        () => analyzePage(normalizedUrl, controller.signal),
+        () => analyzePage(analysisTargetUrl, controller.signal),
         controller.signal,
         deadlineMs,
         'analysis'
       );
+
+      if (analysisTargetUrl !== normalizedUrl) {
+        result = {
+          ...result,
+          landingPageUrl: normalizedUrl,
+        };
+      }
     } catch (error) {
       if (isRouteTimeoutError(error, 'analysis') || isLLMTimeoutError(error)) {
         result = createTimeoutFallbackPayload(normalizedUrl);
