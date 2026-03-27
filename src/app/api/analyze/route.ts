@@ -6,7 +6,14 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { analyzePage } from '@/lib/analyze-page';
 import { ANALYZE_ROUTE_TIMEOUT_MS } from '@/lib/analysis-budget';
-import { getFallbackData, OPENDOOR_DEMO, SONO_BELLO_DEMO } from '@/lib/demo-data';
+import {
+  DemoFixtureKey,
+  getDemoFixtureKey,
+  getDemoFixtureUrl,
+  getFallbackData,
+  OPENDOOR_DEMO,
+  SONO_BELLO_DEMO,
+} from '@/lib/demo-data';
 import { isLLMTimeoutError } from '@/lib/gemini';
 import { kv } from '@/lib/kv-client';
 import {
@@ -48,6 +55,10 @@ function normalizeUrl(url: string) {
   return url;
 }
 
+function createAnalysisId() {
+  return `aid_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
+}
+
 function isValidUrl(url: string) {
   try {
     new URL(normalizeUrl(url));
@@ -87,21 +98,18 @@ function jsonResponse(
   });
 }
 
-function getDemoPayload(url: string) {
-  const lowerUrl = url.toLowerCase();
+function isDemoFixtureKey(value: unknown): value is DemoFixtureKey {
+  return value === 'opendoor' || value === 'sonobello';
+}
 
-  if (lowerUrl.includes('opendoor.com')) {
-    return {
-      ...OPENDOOR_DEMO,
-      landingPageUrl: url,
-      createdAt: new Date().toISOString(),
-    };
-  }
+function getDemoPayload(url: string, fixtureOverride?: DemoFixtureKey) {
+  const fixture = fixtureOverride || getDemoFixtureKey(url);
+  const template = fixture === 'opendoor' ? OPENDOOR_DEMO : SONO_BELLO_DEMO;
+  const payload = structuredClone(template);
 
   return {
-    ...SONO_BELLO_DEMO,
+    ...withAnalysisId(payload, createAnalysisId()),
     landingPageUrl: url,
-    createdAt: new Date().toISOString(),
   };
 }
 
@@ -119,7 +127,7 @@ function createTimeoutFallbackPayload(url: string) {
       ...getFallbackData(url),
       landingPageUrl: url,
     },
-    `aid_${uuidv4().slice(0, 16)}`
+    createAnalysisId()
   );
 }
 
@@ -156,22 +164,6 @@ function withPrimaryScreenshotApiUrl(data: AnalyzeResponseData) {
             : step
         )
       : data.journey,
-  };
-}
-
-function withoutPersistedArtifactUrls(data: AnalyzeResponseData) {
-  return {
-    ...data,
-    screenshot: data.screenshot.status === 'ok'
-      ? {
-          ...data.screenshot,
-          url: undefined,
-        }
-      : data.screenshot,
-    journey: data.journey.map((step) => ({
-      ...step,
-      screenshotUrl: undefined,
-    })),
   };
 }
 
@@ -468,9 +460,39 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { url } = body as { url?: string };
+    const {
+      url,
+      demoFixture,
+    } = body as {
+      url?: string;
+      demoFixture?: DemoFixtureKey | string;
+    };
+    const requestedDemoFixture = demoFixture === undefined
+      ? undefined
+      : isDemoFixtureKey(demoFixture)
+        ? demoFixture
+        : null;
 
-    if (!url) {
+    if (requestedDemoFixture === null) {
+      return jsonResponse(
+        {
+          success: false,
+          error: {
+            code: 'INVALID_DEMO_FIXTURE',
+            message: 'Demo fixture must be opendoor or sonobello',
+            retryable: false,
+          },
+          requestId,
+          timestamp: new Date().toISOString(),
+        },
+        { status: 400 },
+        rateLimitHeaders
+      );
+    }
+
+    const requestedUrl = url || (requestedDemoFixture ? getDemoFixtureUrl(requestedDemoFixture) : undefined);
+
+    if (!requestedUrl) {
       return jsonResponse(
         {
           success: false,
@@ -487,7 +509,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!isValidUrl(url)) {
+    if (!isValidUrl(requestedUrl)) {
       return jsonResponse(
         {
           success: false,
@@ -504,15 +526,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const normalizedUrl = normalizeUrl(url);
+    const normalizedUrl = normalizeUrl(requestedUrl);
     const analysisTargetUrl = getAnalysisTargetUrl(normalizedUrl);
-    const lowerUrl = normalizedUrl.toLowerCase();
-    const useDemoMode = rateLimit.forceDemoMode;
+    const selectedDemoFixture = requestedDemoFixture || getDemoFixtureKey(normalizedUrl);
+    const useDemoMode = rateLimit.forceDemoMode || Boolean(requestedDemoFixture);
 
     if (useDemoMode) {
       try {
         const demoData = await runWithinRouteBudget(
-          () => storeDemoPayload(getDemoPayload(normalizedUrl)),
+          () => storeDemoPayload(getDemoPayload(normalizedUrl, selectedDemoFixture)),
           controller.signal,
           deadlineMs,
           'finalization'
@@ -585,11 +607,11 @@ export async function POST(request: NextRequest) {
       );
     } catch (kvError) {
       if (isRouteTimeoutError(kvError, 'finalization')) {
-        result = withoutPersistedArtifactUrls(result);
-      } else {
-        console.error('KV write error:', kvError);
-        result = withoutPersistedArtifactUrls(result);
+        return finalizationTimeoutResponse(requestId, rateLimitHeaders);
       }
+
+      console.error('KV write error:', kvError);
+      return kvWriteErrorResponse(requestId, rateLimitHeaders);
     }
 
     return jsonResponse(

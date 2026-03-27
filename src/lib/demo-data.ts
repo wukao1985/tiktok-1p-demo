@@ -2,6 +2,44 @@
 
 import { AnalyzeResponseData } from '@/types';
 
+export type DemoFixtureKey = 'opendoor' | 'sonobello';
+
+const SONO_BELLO_DEMO_URL = 'https://www.sonobello.com/consultation/';
+const OPENDOOR_DEMO_URL = 'https://www.opendoor.com';
+
+export function getDemoFixtureKey(url?: string | null): DemoFixtureKey {
+  const normalizedUrl = url?.toLowerCase() || '';
+
+  if (
+    normalizedUrl.includes('sonobello.com') ||
+    normalizedUrl.includes('consultation') ||
+    normalizedUrl.includes('clinic') ||
+    normalizedUrl.includes('med') ||
+    normalizedUrl.includes('aesthetic')
+  ) {
+    return 'sonobello';
+  }
+
+  if (
+    normalizedUrl.includes('opendoor.com') ||
+    normalizedUrl.includes('opendoor') ||
+    normalizedUrl.includes('home') ||
+    normalizedUrl.includes('house') ||
+    normalizedUrl.includes('property') ||
+    normalizedUrl.includes('sell')
+  ) {
+    return 'opendoor';
+  }
+
+  return 'sonobello';
+}
+
+export function getDemoFixtureUrl(fixture: DemoFixtureKey) {
+  return fixture === 'opendoor'
+    ? OPENDOOR_DEMO_URL
+    : SONO_BELLO_DEMO_URL;
+}
+
 export const SONO_BELLO_DEMO: AnalyzeResponseData = {
   analysisId: 'demo_sonobello',
   landingPageUrl: 'https://www.sonobello.com/consultation/',
@@ -84,6 +122,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     width: 480,
     height: 520
   },
+  primaryFormStepNumber: 2,
   generatedCopy: {
     originalHeadline: 'Schedule Your Free Consultation',
     tiktokHeadline: 'Free Body Consult — Results in 30 Min',
@@ -126,7 +165,6 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 2,
-      screenshotUrl: '/sonobello-step1.png',
       url: 'https://www.sonobello.com/consultation/qualify',
       title: 'Check Your Eligibility — Sono Bello',
       fields: [
@@ -166,7 +204,6 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 3,
-      screenshotUrl: '/sonobello-step1.png',
       url: 'https://www.sonobello.com/consultation/details',
       title: 'Complete Your Consultation Request',
       fields: [
@@ -300,6 +337,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     width: 400,
     height: 300
   },
+  primaryFormStepNumber: 3,
   generatedCopy: {
     originalHeadline: 'Get a competitive cash offer',
     tiktokHeadline: 'See Your Home\'s Value in 24 Hours',
@@ -342,7 +380,6 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 2,
-      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/address',
       title: 'Enter Your Address — Opendoor',
       fields: [
@@ -362,7 +399,6 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 3,
-      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/contact',
       title: 'Your Contact Information',
       fields: [
@@ -412,7 +448,6 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     {
       stepNumber: 4,
-      screenshotUrl: '/opendoor-step1.png',
       url: 'https://www.opendoor.com/sell/details',
       title: 'Property Details',
       fields: [
@@ -444,14 +479,11 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
 };
 
 export function getFallbackData(url: string): AnalyzeResponseData {
-  // Determine which demo data to use based on URL
-  const lowerUrl = url.toLowerCase();
-  if (lowerUrl.includes('sonobello.com') || lowerUrl.includes('consultation') || lowerUrl.includes('clinic') || lowerUrl.includes('med') || lowerUrl.includes('aesthetic')) {
-    return { ...SONO_BELLO_DEMO, landingPageUrl: url };
-  }
-  if (lowerUrl.includes('opendoor.com') || lowerUrl.includes('home') || lowerUrl.includes('house') || lowerUrl.includes('property') || lowerUrl.includes('sell')) {
-    return { ...OPENDOOR_DEMO, landingPageUrl: url };
-  }
-  // Default to Sono Bello
-  return { ...SONO_BELLO_DEMO, landingPageUrl: url };
+  const fixture = getDemoFixtureKey(url);
+  const template = fixture === 'opendoor' ? OPENDOOR_DEMO : SONO_BELLO_DEMO;
+
+  return {
+    ...structuredClone(template),
+    landingPageUrl: url,
+  };
 }

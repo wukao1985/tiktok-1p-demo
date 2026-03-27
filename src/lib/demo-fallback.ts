@@ -1,24 +1,23 @@
 import { AnalyzeResponse, ErrorResponse } from '@/types';
-
-const OPENDOOR_DEMO_URL = 'https://www.opendoor.com';
-const SONO_BELLO_DEMO_URL = 'https://www.sonobello.com/consultation/';
+import {
+  getDemoFixtureKey,
+  getDemoFixtureUrl,
+} from '@/lib/demo-data';
 
 export function getDemoFallbackUrl(rawUrl?: string | null) {
-  const normalizedUrl = rawUrl?.toLowerCase() || '';
-
-  return normalizedUrl.includes('opendoor')
-    ? OPENDOOR_DEMO_URL
-    : SONO_BELLO_DEMO_URL;
+  return getDemoFixtureUrl(getDemoFixtureKey(rawUrl));
 }
 
 export async function persistDemoFixture(rawUrl?: string | null) {
+  const demoFixture = getDemoFixtureKey(rawUrl);
   const response = await fetch('/api/analyze', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      url: getDemoFallbackUrl(rawUrl),
+      url: getDemoFixtureUrl(demoFixture),
+      demoFixture,
     }),
   });
 

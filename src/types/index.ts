@@ -160,6 +160,7 @@ export interface AnalyzeResponseData {
   brandColors: BrandColors;
   extractedFields: ExtractedField[];
   formBoundingBox: FormBoundingBox;
+  primaryFormStepNumber: number;
   generatedCopy: GeneratedCopy;
   performance: PerformanceMetrics;
   retargeting: RetargetingData;

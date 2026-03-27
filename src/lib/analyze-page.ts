@@ -461,26 +461,15 @@ async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
   }
 
   try {
-    const takeScreenshot = async (fullPage: boolean) => {
-      const screenshotPromise = page.screenshot({
-        type: 'png',
-        fullPage,
-        encoding: 'base64',
-      });
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Screenshot timeout')), timeoutMs)
-      );
-
-      return await Promise.race([screenshotPromise, timeoutPromise]) as string;
-    };
-
-    let screenshotBase64: string;
-
-    try {
-      screenshotBase64 = await takeScreenshot(true);
-    } catch {
-      screenshotBase64 = await takeScreenshot(false);
-    }
+    const screenshotPromise = page.screenshot({
+      type: 'png',
+      fullPage: true,
+      encoding: 'base64',
+    });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Screenshot timeout')), timeoutMs)
+    );
+    const screenshotBase64 = await Promise.race([screenshotPromise, timeoutPromise]) as string;
 
     return {
       screenshotBase64,
@@ -494,10 +483,10 @@ async function takeScreenshotWithBudget(page: Page, scrapeDeadlineMs: number) {
   }
 }
 
-async function extractFieldsFromPage(
+async function extractPrimaryFormFromPage(
   page: Page,
   options: ExtractFieldOptions = {}
-): Promise<ExtractedField[]> {
+): Promise<PrimaryFormExtractionResult> {
   const result = await page.evaluate(
     ({ fieldSelectorQuery, ignoredSelectors }) => {
       const isFormControl = (
@@ -561,8 +550,11 @@ async function extractFieldsFromPage(
       const topCandidateScore = scoredForms[0]?.score ?? 0;
       const runnerUpScore = scoredForms[1]?.score ?? 0;
       const shouldRaiseUncertain =
-        topCandidateScore < 60 ||
-        (formCandidates.length > 1 && (topCandidateScore - runnerUpScore) < 15);
+        formCandidates.length > 0 &&
+        (
+          topCandidateScore < 60 ||
+          (formCandidates.length > 1 && (topCandidateScore - runnerUpScore) < 15)
+        );
 
       let selectedContainer: Element | null = null;
 
@@ -726,6 +718,14 @@ async function extractFieldsFromPage(
     throw createAnalyzeFailure('PRIMARY_FORM_UNCERTAIN');
   }
 
+  return result;
+}
+
+async function extractFieldsFromPage(
+  page: Page,
+  options: ExtractFieldOptions = {}
+): Promise<ExtractedField[]> {
+  const result = await extractPrimaryFormFromPage(page, options);
   return result.fields;
 }
 
@@ -1011,21 +1011,39 @@ async function waitForInteractionToSettle(
     return;
   }
 
-  await Promise.race([
+  const settleOutcome = await Promise.race([
     page
       .waitForNavigation({
         waitUntil: 'networkidle2',
         timeout: timeoutMs,
       })
-      .catch(() => undefined),
+      .then((response) => ({ type: 'navigation' as const, response }))
+      .catch((error) => ({ type: 'navigation-error' as const, error })),
     page
       .waitForNetworkIdle({
         idleTime: 500,
         timeout: Math.min(timeoutMs, 1500),
       })
-      .catch(() => undefined),
-    waitWithSignal(Math.min(timeoutMs, 1200), signal),
+      .then(() => ({ type: 'network-idle' as const }))
+      .catch(() => ({ type: 'network-idle' as const })),
+    waitWithSignal(Math.min(timeoutMs, 1200), signal).then(() => ({ type: 'timeout' as const })),
   ]);
+
+  if (settleOutcome.type === 'navigation-error') {
+    throw normalizeNavigationError(settleOutcome.error);
+  }
+
+  if (settleOutcome.type === 'navigation') {
+    const status = settleOutcome.response?.status();
+
+    if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
+      throw createAnalyzeFailure('SCRAPING_BLOCKED');
+    }
+
+    if (status && NOT_FOUND_STATUS_CODES.has(status)) {
+      throw createAnalyzeFailure('PAGE_NOT_FOUND');
+    }
+  }
 
   await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
   await waitForHumanDelay(scrapeDeadlineMs, signal);
@@ -1055,7 +1073,11 @@ async function clickElementHandle(
 
     await waitForInteractionToSettle(page, scrapeDeadlineMs, signal);
     return true;
-  } catch {
+  } catch (error) {
+    if (isAnalyzeFailure(error)) {
+      throw error;
+    }
+
     return false;
   }
 }
@@ -1216,7 +1238,8 @@ function getStepType(url: string, fields: ExtractedField[], ctaMatch?: CtaMatch)
 }
 
 async function captureStep(page: Page, scrapeDeadlineMs: number, ctaMatch?: CtaMatch) {
-  let fields = await extractFieldsFromPage(page, { suppressUncertain: true });
+  const primaryForm = await extractPrimaryFormFromPage(page);
+  let fields = primaryForm.fields;
   if (fields.length === 0) {
     fields = await extractAnyInputFields(page);
   }
@@ -1391,6 +1414,7 @@ export async function analyzePage(
         ? currentStep
         : bestStep
     );
+    const primaryFormStepNumber = scrapedSteps.findIndex((step) => step === bestScrapedStep) + 1;
 
     const bestStepScreenshot = bestScrapedStep.screenshotBase64 || undefined;
     const allHtml = scrapedSteps
@@ -1516,6 +1540,7 @@ export async function analyzePage(
         width: 400,
         height: 300
       },
+      primaryFormStepNumber,
       generatedCopy: geminiResult.generatedCopy || {
         originalHeadline: 'Original Headline',
         tiktokHeadline: 'TikTok Headline',

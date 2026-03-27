@@ -429,7 +429,7 @@ function PreviewContent() {
   const maxLoadTime = Math.max(performance.estimated3pLoadTime, performance.estimated1pLoadTime, 0.1);
   const maxDropOff = Math.max(performance.dropOff3p, performance.dropOff1p, 0.01);
   const shouldShowFormOverlay = Boolean(
-    activeStepData?.stepNumber === 1 &&
+    activeStepData?.stepNumber === data.primaryFormStepNumber &&
     activeScreenshotSrc &&
     activeScreenshotDimensions &&
     data.formBoundingBox.width > 0 &&
