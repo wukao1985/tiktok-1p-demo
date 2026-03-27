@@ -198,6 +198,19 @@ interface CtaMatch {
   isNextStepCta: boolean;
 }
 
+type PostClickNavigationOutcome =
+  | {
+      type: 'response';
+      response: Awaited<ReturnType<Page['waitForNavigation']>>;
+    }
+  | {
+      type: 'timeout';
+    }
+  | {
+      type: 'error';
+      error: unknown;
+    };
+
 interface InputDescriptor {
   tagName: string;
   inputType: string;
@@ -352,6 +365,33 @@ function normalizeNavigationError(error: unknown) {
   return error;
 }
 
+function getNavigationFailureForStatus(status?: number | null) {
+  if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
+    return createAnalyzeFailure('SCRAPING_BLOCKED');
+  }
+
+  if (status && NOT_FOUND_STATUS_CODES.has(status)) {
+    return createAnalyzeFailure('PAGE_NOT_FOUND');
+  }
+
+  return null;
+}
+
+function normalizePostClickNavigationOutcome(outcome: PostClickNavigationOutcome) {
+  if (outcome.type === 'timeout') {
+    return;
+  }
+
+  if (outcome.type === 'error') {
+    throw normalizeNavigationError(outcome.error);
+  }
+
+  const navigationFailure = getNavigationFailureForStatus(outcome.response?.status());
+  if (navigationFailure) {
+    throw navigationFailure;
+  }
+}
+
 async function detectBotProtection(page: Page) {
   const urlMatch = BOT_BLOCK_URL_KEYWORDS.some((keyword) => page.url().toLowerCase().includes(keyword));
   const domSignal = await page.evaluate(
@@ -422,14 +462,9 @@ async function navigateToLandingPage(
         waitUntil: 'networkidle2',
         timeout: navigationTimeout,
       });
-      const status = response?.status();
-
-      if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
-        throw createAnalyzeFailure('SCRAPING_BLOCKED');
-      }
-
-      if (status && NOT_FOUND_STATUS_CODES.has(status)) {
-        throw createAnalyzeFailure('PAGE_NOT_FOUND');
+      const navigationFailure = getNavigationFailureForStatus(response?.status());
+      if (navigationFailure) {
+        throw navigationFailure;
       }
 
       await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
@@ -1004,21 +1039,17 @@ async function getPageFingerprint(page: Page) {
 async function waitForInteractionToSettle(
   page: Page,
   scrapeDeadlineMs: number,
+  navigationOutcomePromise: Promise<PostClickNavigationOutcome>,
   signal?: AbortSignal
 ) {
   const timeoutMs = getBoundedTimeout(scrapeDeadlineMs, POST_CLICK_SETTLE_TIMEOUT, 150);
   if (timeoutMs <= 0) {
+    normalizePostClickNavigationOutcome(await navigationOutcomePromise);
     return;
   }
 
   const settleOutcome = await Promise.race([
-    page
-      .waitForNavigation({
-        waitUntil: 'networkidle2',
-        timeout: timeoutMs,
-      })
-      .then((response) => ({ type: 'navigation' as const, response }))
-      .catch((error) => ({ type: 'navigation-error' as const, error })),
+    navigationOutcomePromise.then((outcome) => ({ type: 'navigation' as const, outcome })),
     page
       .waitForNetworkIdle({
         idleTime: 500,
@@ -1029,21 +1060,10 @@ async function waitForInteractionToSettle(
     waitWithSignal(Math.min(timeoutMs, 1200), signal).then(() => ({ type: 'timeout' as const })),
   ]);
 
-  if (settleOutcome.type === 'navigation-error') {
-    throw normalizeNavigationError(settleOutcome.error);
-  }
-
-  if (settleOutcome.type === 'navigation') {
-    const status = settleOutcome.response?.status();
-
-    if (status && BOT_BLOCK_STATUS_CODES.has(status)) {
-      throw createAnalyzeFailure('SCRAPING_BLOCKED');
-    }
-
-    if (status && NOT_FOUND_STATUS_CODES.has(status)) {
-      throw createAnalyzeFailure('PAGE_NOT_FOUND');
-    }
-  }
+  const navigationOutcome = settleOutcome.type === 'navigation'
+    ? settleOutcome.outcome
+    : await navigationOutcomePromise;
+  normalizePostClickNavigationOutcome(navigationOutcome);
 
   await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
   await waitForHumanDelay(scrapeDeadlineMs, signal);
@@ -1061,6 +1081,23 @@ async function clickElementHandle(
     );
     await waitWithSignal(getBoundedTimeout(scrapeDeadlineMs, 150, 50), signal);
 
+    const navigationTimeout = getBoundedTimeout(scrapeDeadlineMs, POST_CLICK_SETTLE_TIMEOUT, 150);
+    const navigationOutcomePromise: Promise<PostClickNavigationOutcome> = navigationTimeout > 0
+      ? page
+          .waitForNavigation({
+            waitUntil: 'networkidle2',
+            timeout: navigationTimeout,
+          })
+          .then((response) => ({ type: 'response' as const, response }))
+          .catch((error) => {
+            if (error instanceof Error && /timeout/i.test(error.message)) {
+              return { type: 'timeout' as const };
+            }
+
+            return { type: 'error' as const, error };
+          })
+      : Promise.resolve({ type: 'timeout' as const });
+
     try {
       await element.click({ delay: getRandomInt(40, 120) });
     } catch {
@@ -1071,7 +1108,7 @@ async function clickElementHandle(
       });
     }
 
-    await waitForInteractionToSettle(page, scrapeDeadlineMs, signal);
+    await waitForInteractionToSettle(page, scrapeDeadlineMs, navigationOutcomePromise, signal);
     return true;
   } catch (error) {
     if (isAnalyzeFailure(error)) {

@@ -122,7 +122,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     width: 480,
     height: 520
   },
-  primaryFormStepNumber: 2,
+  primaryFormStepNumber: 1,
   generatedCopy: {
     originalHeadline: 'Schedule Your Free Consultation',
     tiktokHeadline: 'Free Body Consult — Results in 30 Min',
@@ -337,7 +337,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     width: 400,
     height: 300
   },
-  primaryFormStepNumber: 3,
+  primaryFormStepNumber: 1,
   generatedCopy: {
     originalHeadline: 'Get a competitive cash offer',
     tiktokHeadline: 'See Your Home\'s Value in 24 Hours',
