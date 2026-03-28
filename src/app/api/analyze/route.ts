@@ -144,6 +144,11 @@ function getScreenshotApiUrl(analysisId: string) {
 }
 
 function withPrimaryScreenshotApiUrl(data: AnalyzeResponseData) {
+  // Demo fixtures and timeout fallbacks use checked-in public assets; keep those stable.
+  if (data.isSimulatedData) {
+    return data;
+  }
+
   const screenshotUrl =
     data.screenshot.status === 'ok'
       ? getScreenshotApiUrl(data.analysisId)
