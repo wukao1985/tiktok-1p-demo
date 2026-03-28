@@ -152,7 +152,7 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     },
     estimatedCtrLift: 0.42
   },
-  // 3-step Sono Bello journey
+  // Screenshot-backed demo journey
   journey: [
     {
       stepNumber: 1,
@@ -223,86 +223,9 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
       ],
       ctaText: 'See If You Qualify',
       stepType: 'form'
-    },
-    {
-      stepNumber: 2,
-      url: 'https://www.sonobello.com/consultation/qualify',
-      title: 'Check Your Eligibility — Sono Bello',
-      fields: [
-        {
-          id: 'step2_field_1',
-          label: 'First Name',
-          type: 'text',
-          required: true,
-          confidence: 0.98,
-          tiktokFieldId: 'first_name',
-          tiktokFieldType: 'FULL_NAME',
-          sourceSelector: "input[name='firstName']"
-        },
-        {
-          id: 'step2_field_2',
-          label: 'Last Name',
-          type: 'text',
-          required: true,
-          confidence: 0.98,
-          tiktokFieldId: 'last_name',
-          tiktokFieldType: 'FULL_NAME',
-          sourceSelector: "input[name='lastName']"
-        },
-        {
-          id: 'step2_field_3',
-          label: 'Phone',
-          type: 'tel',
-          required: true,
-          confidence: 0.97,
-          tiktokFieldId: 'phone',
-          tiktokFieldType: 'PHONE_NUMBER',
-          sourceSelector: "input[type='tel']"
-        }
-      ],
-      ctaText: 'Continue',
-      stepType: 'form'
-    },
-    {
-      stepNumber: 3,
-      url: 'https://www.sonobello.com/consultation/details',
-      title: 'Complete Your Consultation Request',
-      fields: [
-        {
-          id: 'step3_field_1',
-          label: 'Email',
-          type: 'email',
-          required: true,
-          confidence: 0.99,
-          tiktokFieldId: 'email',
-          tiktokFieldType: 'EMAIL',
-          sourceSelector: "input[type='email']"
-        },
-        {
-          id: 'step3_field_2',
-          label: 'ZIP Code',
-          type: 'zip',
-          required: true,
-          confidence: 0.95,
-          tiktokFieldId: 'zip_code',
-          tiktokFieldType: 'ZIP_POST_CODE',
-          sourceSelector: "input[name='zip']"
-        },
-        {
-          id: 'step3_field_3',
-          label: 'Body Area of Interest',
-          type: 'dropdown',
-          required: false,
-          confidence: 0.88,
-          tiktokFieldId: 'custom_body_area',
-          tiktokFieldType: 'CUSTOM',
-          sourceSelector: "select[name='bodyArea']"
-        }
-      ],
-      stepType: 'multistep'
     }
   ],
-  totalJourneySteps: 3
+  totalJourneySteps: 1
 };
 
 export const OPENDOOR_DEMO: AnalyzeResponseData = {
@@ -428,7 +351,7 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     },
     estimatedCtrLift: 0.38
   },
-  // 4-step Opendoor journey
+  // Screenshot-backed demo journey
   journey: [
     {
       stepNumber: 1,
@@ -449,105 +372,9 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
       ],
       ctaText: 'Get Your Offer',
       stepType: 'form'
-    },
-    {
-      stepNumber: 2,
-      url: 'https://www.opendoor.com/sell/address',
-      title: 'Enter Your Address — Opendoor',
-      fields: [
-        {
-          id: 'step2_field_1',
-          label: 'Street Address',
-          type: 'text',
-          required: true,
-          confidence: 0.99,
-          tiktokFieldId: 'street_address',
-          tiktokFieldType: 'CUSTOM',
-          sourceSelector: "input[name='address']"
-        }
-      ],
-      ctaText: 'Continue',
-      stepType: 'form'
-    },
-    {
-      stepNumber: 3,
-      url: 'https://www.opendoor.com/sell/contact',
-      title: 'Your Contact Information',
-      fields: [
-        {
-          id: 'step3_field_1',
-          label: 'First Name',
-          type: 'text',
-          required: true,
-          confidence: 0.98,
-          tiktokFieldId: 'first_name',
-          tiktokFieldType: 'FULL_NAME',
-          sourceSelector: "input[name='firstName']"
-        },
-        {
-          id: 'step3_field_2',
-          label: 'Last Name',
-          type: 'text',
-          required: true,
-          confidence: 0.98,
-          tiktokFieldId: 'last_name',
-          tiktokFieldType: 'FULL_NAME',
-          sourceSelector: "input[name='lastName']"
-        },
-        {
-          id: 'step3_field_3',
-          label: 'Email',
-          type: 'email',
-          required: true,
-          confidence: 0.98,
-          tiktokFieldId: 'email',
-          tiktokFieldType: 'EMAIL',
-          sourceSelector: "input[type='email']"
-        },
-        {
-          id: 'step3_field_4',
-          label: 'Phone',
-          type: 'tel',
-          required: true,
-          confidence: 0.97,
-          tiktokFieldId: 'phone',
-          tiktokFieldType: 'PHONE_NUMBER',
-          sourceSelector: "input[type='tel']"
-        }
-      ],
-      ctaText: 'Next Step',
-      stepType: 'multistep'
-    },
-    {
-      stepNumber: 4,
-      url: 'https://www.opendoor.com/sell/details',
-      title: 'Property Details',
-      fields: [
-        {
-          id: 'step4_field_1',
-          label: 'ZIP Code',
-          type: 'zip',
-          required: true,
-          confidence: 0.97,
-          tiktokFieldId: 'zip_code',
-          tiktokFieldType: 'ZIP_POST_CODE',
-          sourceSelector: "input[name='zip']"
-        },
-        {
-          id: 'step4_field_2',
-          label: 'Home Type',
-          type: 'dropdown',
-          required: false,
-          confidence: 0.85,
-          tiktokFieldId: 'custom_home_type',
-          tiktokFieldType: 'CUSTOM',
-          sourceSelector: "select[name='homeType']"
-        }
-      ],
-      stepType: 'form'
     }
   ],
-  totalJourneySteps: 4
+  totalJourneySteps: 1
 };
 
 export function getFallbackData(url: string): AnalyzeResponseData {

@@ -132,6 +132,20 @@ function getOverlayStyle(
   };
 }
 
+function getInitialActiveStep(
+  journey: JourneyStep[],
+  primaryFormStepNumber: number | null | undefined
+) {
+  return (
+    (typeof primaryFormStepNumber === 'number' &&
+      Number.isInteger(primaryFormStepNumber) &&
+      primaryFormStepNumber > 0 &&
+      journey.some((step) => step.stepNumber === primaryFormStepNumber) &&
+      primaryFormStepNumber) ||
+    1
+  );
+}
+
 function PhonePreview({
   brandName,
   logoUrl,
@@ -272,7 +286,7 @@ function PreviewContent() {
           setData(payload);
           setEditableFields(payload.extractedFields);
           setEditableCopy(payload.generatedCopy);
-          setActiveStep(payload.journey[0]?.stepNumber || 1);
+          setActiveStep(getInitialActiveStep(payload.journey, payload.primaryFormStepNumber));
         } else {
           setError(result.error?.message || 'Failed to load analysis');
         }
