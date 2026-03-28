@@ -387,6 +387,18 @@ function mapAnalyzeError(error: unknown): {
     };
   }
 
+  if (errorMessage === 'NETWORK_FAILURE') {
+    return {
+      status: 503,
+      error: {
+        code: 'NETWORK_FAILURE',
+        message: 'Target site could not be reached due to a network error',
+        retryable: true,
+      },
+      headers: {},
+    };
+  }
+
   if (errorMessage === 'PAGE_NOT_FOUND') {
     return {
       status: 422,
@@ -430,7 +442,27 @@ function mapAnalyzeError(error: unknown): {
     };
   }
 
-  if (/404|dns|enotfound|err_name_not_resolved/i.test(errorMessage)) {
+  if (
+    /err_connection_refused|err_address_unreachable|err_connection_closed|connection refused|address unreachable|connection closed/i.test(
+      errorMessage
+    )
+  ) {
+    return {
+      status: 503,
+      error: {
+        code: 'NETWORK_FAILURE',
+        message: 'Target site could not be reached due to a network error',
+        retryable: true,
+      },
+      headers: {},
+    };
+  }
+
+  if (
+    /404|dns|enotfound|err_name_not_resolved|could not resolve host|server ip address could not be found/i.test(
+      errorMessage
+    )
+  ) {
     return {
       status: 422,
       error: {

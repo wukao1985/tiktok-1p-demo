@@ -32,6 +32,7 @@ interface ScrapedStep {
 
 type AnalyzeFailureCode =
   | 'SCRAPING_BLOCKED'
+  | 'NETWORK_FAILURE'
   | 'PAGE_NOT_FOUND'
   | 'NO_FORM_DETECTED'
   | 'PRIMARY_FORM_UNCERTAIN';
@@ -102,7 +103,6 @@ const COOKIE_ACTION_KEYWORDS = [
 ];
 const COOKIE_CONTEXT_KEYWORDS = ['cookie', 'consent', 'gdpr', 'privacy'];
 const BOT_BLOCK_KEYWORDS = [
-  'captcha',
   'verify you are human',
   'verify you\'re human',
   'access denied',
@@ -122,25 +122,39 @@ const BOT_BLOCK_TITLE_PATTERNS = [
   'security check',
   'checking your browser',
 ];
-const BOT_BLOCK_SELECTORS = [
-  'iframe[src*="captcha"]',
+const BOT_BLOCK_INTERSTITIAL_SELECTORS = [
   'iframe[src*="challenge"]',
   'iframe[title*="challenge"]',
+  '#challenge-running',
+  'form[action*="challenge"]',
+];
+const BOT_WIDGET_SELECTORS = [
+  'iframe[src*="captcha"]',
   '[id*="captcha"]',
   '[class*="captcha"]',
   '[data-sitekey]',
   '[name="cf-turnstile-response"]',
   '.cf-turnstile',
-  '#challenge-running',
-  'form[action*="challenge"]',
 ];
-const NOT_FOUND_MESSAGE_PATTERNS = [
+const HOSTNAME_RESOLUTION_MESSAGE_PATTERNS = [
   'err_name_not_resolved',
   'enotfound',
+  'dns_probe_finished_nxdomain',
+  'server ip address could not be found',
+  'couldn\'t find the server ip address',
+  'could not resolve host',
+  'ns_error_unknown_host',
+];
+const RETRYABLE_NETWORK_MESSAGE_PATTERNS = [
   'err_connection_refused',
   'err_address_unreachable',
   'err_connection_closed',
-  'ns_error_unknown_host',
+  'connection refused',
+  'address unreachable',
+  'connection closed',
+  'net::err_connection_refused',
+  'net::err_address_unreachable',
+  'net::err_connection_closed',
 ];
 const BOT_BLOCK_STATUS_CODES = new Set([401, 403, 429]);
 const NOT_FOUND_STATUS_CODES = new Set([404, 410]);
@@ -356,22 +370,32 @@ function isAnalyzeFailure(error: unknown, code?: AnalyzeFailureCode): error is A
   return error instanceof AnalyzeFailure && (!code || error.code === code);
 }
 
+function getNavigationFailureForMessage(message: string) {
+  if (
+    HOSTNAME_RESOLUTION_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern)) ||
+    /\b404\b/.test(message)
+  ) {
+    return createAnalyzeFailure('PAGE_NOT_FOUND');
+  }
+
+  if (RETRYABLE_NETWORK_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern))) {
+    return createAnalyzeFailure('NETWORK_FAILURE');
+  }
+
+  if (/captcha|challenge|blocked|access denied|forbidden|\b401\b|\b403\b|\b429\b/.test(message)) {
+    return createAnalyzeFailure('SCRAPING_BLOCKED');
+  }
+
+  return null;
+}
+
 function normalizeNavigationError(error: unknown) {
   if (isAnalyzeFailure(error)) {
     return error;
   }
 
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-
-  if (NOT_FOUND_MESSAGE_PATTERNS.some((pattern) => message.includes(pattern)) || /\b404\b/.test(message)) {
-    return createAnalyzeFailure('PAGE_NOT_FOUND');
-  }
-
-  if (/captcha|challenge|blocked|access denied|forbidden|\b403\b|\b429\b/.test(message)) {
-    return createAnalyzeFailure('SCRAPING_BLOCKED');
-  }
-
-  return error;
+  return getNavigationFailureForMessage(message) ?? error;
 }
 
 function getNavigationFailureForStatus(status?: number | null) {
@@ -417,12 +441,51 @@ async function normalizePostClickNavigationOutcome(
 
 async function detectBotProtection(page: Page) {
   const domSignal = await page.evaluate(
-    ({ keywords, selectors, titlePatterns, statusCodes }) => {
+    ({ keywords, interstitialSelectors, widgetSelectors, titlePatterns, statusCodes }) => {
+      const isVisibleElement = (element: Element) => {
+        if (!(element instanceof HTMLElement)) {
+          return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      };
+      const hasVisibleSelectorMatch = (selectors: string[]) =>
+        selectors.some((selector) =>
+          Array.from(document.querySelectorAll(selector)).some((element) => isVisibleElement(element))
+        );
+      const hasFullPageWidgetBlocker = () => {
+        const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+
+        return widgetSelectors.some((selector) =>
+          Array.from(document.querySelectorAll(selector)).some((element) => {
+            if (!(element instanceof HTMLElement) || !isVisibleElement(element)) {
+              return false;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const style = window.getComputedStyle(element);
+            const areaRatio = (rect.width * rect.height) / viewportArea;
+            const isOverlay = style.position === 'fixed' || style.position === 'sticky';
+
+            return areaRatio >= 0.35 || (isOverlay && areaRatio >= 0.15);
+          })
+        );
+      };
+
       const pageText = `${document.title}\n${document.body?.innerText || ''}`.toLowerCase();
       const keywordMatch = keywords.some((keyword) => pageText.includes(keyword));
-      const selectorMatch = selectors.some((selector) => Boolean(document.querySelector(selector)));
       const lowerTitle = document.title.toLowerCase();
       const titleMatch = titlePatterns.some((pattern) => lowerTitle.includes(pattern));
+      const interstitialSelectorMatch = hasVisibleSelectorMatch(interstitialSelectors);
+      const widgetSelectorMatch = hasVisibleSelectorMatch(widgetSelectors);
+      const fullPageWidgetBlocker = widgetSelectorMatch && hasFullPageWidgetBlocker();
       const navigationEntry = performance.getEntriesByType('navigation')[0] as
         | (PerformanceEntry & {
             responseStatus?: number;
@@ -434,11 +497,18 @@ async function detectBotProtection(page: Page) {
           : null;
       const statusMatch = responseStatus !== null && statusCodes.includes(responseStatus);
 
-      return keywordMatch || selectorMatch || titleMatch || statusMatch;
+      return (
+        keywordMatch ||
+        titleMatch ||
+        interstitialSelectorMatch ||
+        statusMatch ||
+        fullPageWidgetBlocker
+      );
     },
     {
       keywords: BOT_BLOCK_KEYWORDS,
-      selectors: BOT_BLOCK_SELECTORS,
+      interstitialSelectors: BOT_BLOCK_INTERSTITIAL_SELECTORS,
+      widgetSelectors: BOT_WIDGET_SELECTORS,
       titlePatterns: BOT_BLOCK_TITLE_PATTERNS,
       statusCodes: Array.from(BOT_BLOCK_STATUS_CODES),
     }
@@ -467,30 +537,36 @@ async function hasLoadedDocument(page: Page) {
 async function getBrowserErrorPageFailure(page: Page) {
   const pageUrl = page.url().toLowerCase();
 
-  if (pageUrl.startsWith('chrome-error://')) {
-    return createAnalyzeFailure('PAGE_NOT_FOUND');
-  }
-
   try {
     const pageSignalText = await page.evaluate(() =>
       `${document.title}\n${document.body?.innerText || ''}`.toLowerCase()
     );
+    const navigationFailure = getNavigationFailureForMessage(pageSignalText);
+    if (navigationFailure) {
+      return navigationFailure;
+    }
 
     // A pending navigation can legitimately remain on about:blank until the first
-    // response commits, so only treat it as not-found when the page content also
+    // response commits, so only treat it as a failure when the page content also
     // shows a browser/network error signal.
     if (
-      /net::err_/i.test(pageSignalText) ||
-      /this site can.?t be reached|dns_probe_finished|this page isn.?t working/i.test(pageSignalText) ||
-      NOT_FOUND_MESSAGE_PATTERNS.some((pattern) => pageSignalText.includes(pattern))
+      pageUrl.startsWith('chrome-error://') &&
+      (
+        /net::err_/i.test(pageSignalText) ||
+        /this site can.?t be reached|this page isn.?t working/i.test(pageSignalText)
+      )
     ) {
-      return createAnalyzeFailure('PAGE_NOT_FOUND');
+      return createAnalyzeFailure('NETWORK_FAILURE');
     }
   } catch {
-    return null;
+    return pageUrl.startsWith('chrome-error://')
+      ? createAnalyzeFailure('NETWORK_FAILURE')
+      : null;
   }
 
-  return null;
+  return pageUrl.startsWith('chrome-error://')
+    ? createAnalyzeFailure('NETWORK_FAILURE')
+    : null;
 }
 
 async function waitForRenderedFormSignals(
@@ -547,7 +623,13 @@ async function navigateToLandingPage(
       }
 
       const normalizedError = normalizeNavigationError(error);
-      if (isAnalyzeFailure(normalizedError, 'PAGE_NOT_FOUND') && attempt === 0) {
+      if (
+        (
+          isAnalyzeFailure(normalizedError, 'PAGE_NOT_FOUND') ||
+          isAnalyzeFailure(normalizedError, 'NETWORK_FAILURE')
+        ) &&
+        attempt === 0
+      ) {
         await waitWithSignal(1000, signal);
         continue;
       }
@@ -717,6 +799,18 @@ async function extractPrimaryFormFromPage(
         return { score, area };
       };
 
+      const getContainerSelectionScore = (container: Element, totalFieldCount: number) => {
+        if (container.tagName.toLowerCase() === 'form') {
+          const rect = container.getBoundingClientRect();
+          return {
+            score: getFieldScore(container),
+            area: Math.max(1, rect.width * rect.height),
+          };
+        }
+
+        return getNonFormContainerSelectionScore(container, totalFieldCount);
+      };
+
       const findBestNonFormContainer = (
         field: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
         totalFieldCount: number
@@ -734,7 +828,7 @@ async function extractPrimaryFormFromPage(
           const fieldCount = getSupportedFields(current).length;
 
           if (fieldCount >= 2 && isVisibleElement(current)) {
-            const selectionScore = getNonFormContainerSelectionScore(current, totalFieldCount);
+            const selectionScore = getContainerSelectionScore(current, totalFieldCount);
 
             if (
               !bestCandidate ||
@@ -755,24 +849,58 @@ async function extractPrimaryFormFromPage(
           current = current.parentElement;
         }
 
-        return bestCandidate?.element ?? null;
+        return bestCandidate;
       };
 
       const documentFields = getSupportedFields(document);
-      const containerCandidates = Array.from(
-        new Set(
-          documentFields
-            .map((field) => field.closest('form') ?? findBestNonFormContainer(field, documentFields.length))
-            .filter((container): container is Element => Boolean(container))
-        )
-      );
+      const scoredCandidateMap = new Map<
+        Element,
+        {
+          container: Element;
+          score: number;
+          area: number;
+        }
+      >();
 
-      const scoredCandidates = containerCandidates
-        .map((container) => ({
-          container,
-          score: getFieldScore(container),
-        }))
-        .sort((a, b) => b.score - a.score);
+      documentFields.forEach((field) => {
+        const formContainer = field.closest('form');
+        const candidate = formContainer
+          ? {
+              element: formContainer,
+              ...getContainerSelectionScore(formContainer, documentFields.length),
+            }
+          : findBestNonFormContainer(field, documentFields.length);
+
+        if (!candidate) {
+          return;
+        }
+
+        const existingCandidate = scoredCandidateMap.get(candidate.element);
+
+        if (
+          !existingCandidate ||
+          candidate.score > existingCandidate.score ||
+          (
+            candidate.score === existingCandidate.score &&
+            candidate.area < existingCandidate.area
+          )
+        ) {
+          scoredCandidateMap.set(candidate.element, {
+            container: candidate.element,
+            score: candidate.score,
+            area: candidate.area,
+          });
+        }
+      });
+
+      const scoredCandidates = Array.from(scoredCandidateMap.values()).sort((a, b) => {
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+
+        return a.area - b.area;
+      });
+      const containerCandidates = scoredCandidates.map((candidate) => candidate.container);
 
       const topCandidateScore = scoredCandidates[0]?.score ?? 0;
       const runnerUpScore = scoredCandidates[1]?.score ?? 0;
@@ -786,7 +914,7 @@ async function extractPrimaryFormFromPage(
       let selectedContainer: Element | null = null;
 
       if (containerCandidates.length === 1) {
-        selectedContainer = containerCandidates[0];
+        selectedContainer = scoredCandidates[0]?.container ?? null;
       } else if (containerCandidates.length > 1) {
         selectedContainer = scoredCandidates[0]?.container ?? null;
       } else if (documentFields.length > 0) {
