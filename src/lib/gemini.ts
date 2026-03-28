@@ -74,6 +74,27 @@ interface GeminiRequestConfig {
   url: string;
 }
 
+type JsonRecord = Record<string, unknown>;
+
+const VALID_FIELD_TYPES = new Set<ExtractedField['type']>([
+  'text',
+  'email',
+  'tel',
+  'number',
+  'zip',
+  'dropdown',
+  'checkbox',
+  'radio',
+  'date',
+]);
+const VALID_TIKTOK_FIELD_TYPES = new Set<ExtractedField['tiktokFieldType']>([
+  'FULL_NAME',
+  'EMAIL',
+  'PHONE_NUMBER',
+  'ZIP_POST_CODE',
+  'CUSTOM',
+]);
+
 export class LLMTimeoutError extends Error {
   readonly code = 'LLM_TIMEOUT';
   readonly timeoutMs: number;
@@ -94,6 +115,201 @@ export function isLLMTimeoutError(error: unknown): error is LLMTimeoutError {
       'code' in error &&
       (error as { code?: unknown }).code === 'LLM_TIMEOUT')
   );
+}
+
+function describeValueType(value: unknown) {
+  if (value === undefined) {
+    return 'undefined';
+  }
+
+  if (value === null) {
+    return 'null';
+  }
+
+  if (Array.isArray(value)) {
+    return 'array';
+  }
+
+  return typeof value;
+}
+
+export class GeminiFormatError extends Error {
+  readonly code = 'GEMINI_FORMAT_ERROR';
+  readonly fieldPath: string;
+
+  constructor(fieldPath: string, expected: string, actual: unknown) {
+    super(
+      `Gemini response format error at ${fieldPath}: expected ${expected}, received ${describeValueType(actual)}`
+    );
+    this.name = 'GeminiFormatError';
+    this.fieldPath = fieldPath;
+  }
+}
+
+export function isGeminiFormatError(error: unknown): error is GeminiFormatError {
+  return (
+    error instanceof GeminiFormatError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'GEMINI_FORMAT_ERROR')
+  );
+}
+
+function expectObject(value: unknown, fieldPath: string): JsonRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new GeminiFormatError(fieldPath, 'object', value);
+  }
+
+  return value as JsonRecord;
+}
+
+function expectArray(value: unknown, fieldPath: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new GeminiFormatError(fieldPath, 'array', value);
+  }
+
+  return value;
+}
+
+function expectString(value: unknown, fieldPath: string): string {
+  if (typeof value !== 'string') {
+    throw new GeminiFormatError(fieldPath, 'string', value);
+  }
+
+  return value;
+}
+
+function expectOptionalString(value: unknown, fieldPath: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return expectString(value, fieldPath);
+}
+
+function expectBoolean(value: unknown, fieldPath: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new GeminiFormatError(fieldPath, 'boolean', value);
+  }
+
+  return value;
+}
+
+function expectNumber(value: unknown, fieldPath: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new GeminiFormatError(fieldPath, 'finite number', value);
+  }
+
+  return value;
+}
+
+function expectStringArray(value: unknown, fieldPath: string): string[] {
+  return expectArray(value, fieldPath).map((entry, index) =>
+    expectString(entry, `${fieldPath}[${index}]`)
+  );
+}
+
+function expectEnum<T extends string>(
+  value: unknown,
+  fieldPath: string,
+  allowedValues: ReadonlySet<T>
+): T {
+  const stringValue = expectString(value, fieldPath);
+
+  if (!allowedValues.has(stringValue as T)) {
+    throw new GeminiFormatError(
+      fieldPath,
+      `one of ${Array.from(allowedValues).join(', ')}`,
+      stringValue
+    );
+  }
+
+  return stringValue as T;
+}
+
+function validateGeminiResponse(parsedResult: unknown): GeminiResponse {
+  const root = expectObject(parsedResult, 'response');
+  const extractedFields = expectArray(root.extractedFields, 'extractedFields').map(
+    (field, index) => {
+      const fieldPath = `extractedFields[${index}]`;
+      const fieldObject = expectObject(field, fieldPath);
+
+      return {
+        id: expectString(fieldObject.id, `${fieldPath}.id`),
+        label: expectString(fieldObject.label, `${fieldPath}.label`),
+        type: expectEnum(fieldObject.type, `${fieldPath}.type`, VALID_FIELD_TYPES),
+        required: expectBoolean(fieldObject.required, `${fieldPath}.required`),
+        confidence: expectNumber(fieldObject.confidence, `${fieldPath}.confidence`),
+        tiktokFieldId: expectString(fieldObject.tiktokFieldId, `${fieldPath}.tiktokFieldId`),
+        tiktokFieldType: expectEnum(
+          fieldObject.tiktokFieldType,
+          `${fieldPath}.tiktokFieldType`,
+          VALID_TIKTOK_FIELD_TYPES
+        ),
+        sourceSelector: expectString(
+          fieldObject.sourceSelector,
+          `${fieldPath}.sourceSelector`
+        ),
+        placeholder: expectOptionalString(fieldObject.placeholder, `${fieldPath}.placeholder`),
+      };
+    }
+  );
+
+  const formBoundingBoxObject = expectObject(root.formBoundingBox, 'formBoundingBox');
+  const primaryFormSelectionObject = expectObject(
+    root.primaryFormSelection,
+    'primaryFormSelection'
+  );
+  const brandColorsObject = expectObject(root.brandColors, 'brandColors');
+  const generatedCopyObject = expectObject(root.generatedCopy, 'generatedCopy');
+
+  return {
+    extractedFields,
+    formBoundingBox: {
+      x: expectNumber(formBoundingBoxObject.x, 'formBoundingBox.x'),
+      y: expectNumber(formBoundingBoxObject.y, 'formBoundingBox.y'),
+      width: expectNumber(formBoundingBoxObject.width, 'formBoundingBox.width'),
+      height: expectNumber(formBoundingBoxObject.height, 'formBoundingBox.height'),
+    },
+    primaryFormSelection: {
+      topCandidateScore: expectNumber(
+        primaryFormSelectionObject.topCandidateScore,
+        'primaryFormSelection.topCandidateScore'
+      ),
+      runnerUpScore: expectNumber(
+        primaryFormSelectionObject.runnerUpScore,
+        'primaryFormSelection.runnerUpScore'
+      ),
+    },
+    brandColors: {
+      name: expectString(brandColorsObject.name, 'brandColors.name'),
+      primaryColor: expectString(brandColorsObject.primaryColor, 'brandColors.primaryColor'),
+      secondaryColor: expectString(
+        brandColorsObject.secondaryColor,
+        'brandColors.secondaryColor'
+      ),
+      logoUrl: expectOptionalString(brandColorsObject.logoUrl, 'brandColors.logoUrl'),
+    },
+    generatedCopy: {
+      originalHeadline: expectString(
+        generatedCopyObject.originalHeadline,
+        'generatedCopy.originalHeadline'
+      ),
+      tiktokHeadline: expectString(
+        generatedCopyObject.tiktokHeadline,
+        'generatedCopy.tiktokHeadline'
+      ),
+      originalCta: expectString(generatedCopyObject.originalCta, 'generatedCopy.originalCta'),
+      tiktokCta: expectString(generatedCopyObject.tiktokCta, 'generatedCopy.tiktokCta'),
+      benefits: expectStringArray(generatedCopyObject.benefits, 'generatedCopy.benefits'),
+      explanation: expectString(generatedCopyObject.explanation, 'generatedCopy.explanation'),
+      disclaimerText: expectOptionalString(
+        generatedCopyObject.disclaimerText,
+        'generatedCopy.disclaimerText'
+      ),
+    },
+  };
 }
 
 function getRequiredVertexEnv(
@@ -459,26 +675,28 @@ export async function analyzeWithGemini(
   }
 
   const text = await callVertex(content, options);
-  const parsedResult = parseJsonResponse<GeminiResponse>(text);
+  const parsedResult = validateGeminiResponse(parseJsonResponse<unknown>(text));
 
   // Transform the response to match our types
-  const extractedFields: ExtractedField[] = parsedResult.extractedFields.map(field => ({
-    id: field.id,
-    label: field.label,
-    type: field.type as ExtractedField['type'],
-    placeholder: field.placeholder,
-    required: field.required,
-    confidence: field.confidence,
-    tiktokFieldId: field.tiktokFieldId,
-    tiktokFieldType: field.tiktokFieldType as ExtractedField['tiktokFieldType'],
-    sourceSelector: field.sourceSelector
-  }));
+  const extractedFields: ExtractedField[] = parsedResult.extractedFields.map(
+    (field) => ({
+      id: field.id,
+      label: field.label,
+      type: field.type as ExtractedField['type'],
+      placeholder: field.placeholder,
+      required: field.required,
+      confidence: field.confidence,
+      tiktokFieldId: field.tiktokFieldId,
+      tiktokFieldType: field.tiktokFieldType as ExtractedField['tiktokFieldType'],
+      sourceSelector: field.sourceSelector,
+    })
+  );
 
   const brandColors: BrandColors = {
     name: parsedResult.brandColors.name,
     primaryColor: parsedResult.brandColors.primaryColor,
     secondaryColor: parsedResult.brandColors.secondaryColor,
-    logoUrl: parsedResult.brandColors.logoUrl
+    logoUrl: parsedResult.brandColors.logoUrl,
   };
 
   const generatedCopy: GeneratedCopy = {
@@ -488,19 +706,12 @@ export async function analyzeWithGemini(
     tiktokCta: parsedResult.generatedCopy.tiktokCta,
     benefits: parsedResult.generatedCopy.benefits,
     explanation: parsedResult.generatedCopy.explanation,
-    disclaimerText: parsedResult.generatedCopy.disclaimerText
+    disclaimerText: parsedResult.generatedCopy.disclaimerText,
   };
 
-  const topCandidateScore = Number(parsedResult.primaryFormSelection?.topCandidateScore);
-  const runnerUpScore = Number(parsedResult.primaryFormSelection?.runnerUpScore);
-
-  if (!Number.isFinite(topCandidateScore) || !Number.isFinite(runnerUpScore)) {
-    throw new Error('Unexpected response format from Vertex AI');
-  }
-
   const primaryFormSelection: PrimaryFormSelection = {
-    topCandidateScore,
-    runnerUpScore,
+    topCandidateScore: parsedResult.primaryFormSelection.topCandidateScore,
+    runnerUpScore: parsedResult.primaryFormSelection.runnerUpScore,
   };
 
   return {

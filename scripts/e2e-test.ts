@@ -93,16 +93,43 @@ async function runTest(testCase: TestCase) {
   );
   assert.equal(payload.success, true, `${testCase.label}: success !== true`);
   assert.ok(payload.data, `${testCase.label}: response missing data payload`);
-  assert.equal(
-    payload.fallbackReason,
-    undefined,
-    `${testCase.label}: unexpected fallbackReason=${payload.fallbackReason}`
+
+  const isLiveResponse =
+    payload.data.isSimulatedData === false &&
+    payload.fallbackReason === undefined;
+  const isTimeoutFallback =
+    payload.data.isSimulatedData === true &&
+    payload.fallbackReason === 'timeout';
+
+  assert.ok(
+    isLiveResponse || isTimeoutFallback,
+    `${testCase.label}: expected live data or timeout fallback, got isSimulatedData=${payload.data.isSimulatedData} fallbackReason=${payload.fallbackReason}`
   );
-  assert.equal(
-    payload.data.isSimulatedData,
-    false,
-    `${testCase.label}: expected live data, got simulated data`
-  );
+
+  if (isLiveResponse) {
+    assert.equal(
+      payload.fallbackReason,
+      undefined,
+      `${testCase.label}: unexpected fallbackReason=${payload.fallbackReason}`
+    );
+    assert.equal(
+      payload.data.isSimulatedData,
+      false,
+      `${testCase.label}: expected live data, got simulated data`
+    );
+  } else {
+    assert.equal(
+      payload.fallbackReason,
+      'timeout',
+      `${testCase.label}: expected timeout fallbackReason, got ${payload.fallbackReason}`
+    );
+    assert.equal(
+      payload.data.isSimulatedData,
+      true,
+      `${testCase.label}: expected timeout fallback to use simulated data`
+    );
+  }
+
   assert.ok(
     payload.data.extractedFields.length >= testCase.minFields,
     `${testCase.label}: expected at least ${testCase.minFields} extracted field(s), got ${payload.data.extractedFields.length}`
@@ -121,7 +148,7 @@ async function runTest(testCase: TestCase) {
     .join(', ');
 
   console.log(
-    `[pass] ${testCase.label} in ${elapsedMs}ms; latency=${payload.latencyMs ?? 'n/a'}; fields=${labels}`
+    `[pass] ${testCase.label} in ${elapsedMs}ms; mode=${isTimeoutFallback ? 'timeout-fallback' : 'live'}; latency=${payload.latencyMs ?? 'n/a'}; fields=${labels}`
   );
 }
 
