@@ -14,7 +14,11 @@ import {
   OPENDOOR_DEMO,
   SONO_BELLO_DEMO,
 } from '@/lib/demo-data';
-import { isGeminiFormatError, isLLMTimeoutError } from '@/lib/gemini';
+import {
+  isGeminiFormatError,
+  isGeminiTransportError,
+  isLLMTimeoutError,
+} from '@/lib/gemini';
 import { kv } from '@/lib/kv-client';
 import {
   getExpiryMetadataKey,
@@ -322,6 +326,18 @@ function mapAnalyzeError(error: unknown): {
       error: {
         code: 'LLM_ERROR',
         message: 'Gemini API returned malformed or incomplete JSON',
+        retryable: true,
+      },
+      headers: {},
+    };
+  }
+
+  if (isGeminiTransportError(error)) {
+    return {
+      status: 503,
+      error: {
+        code: 'LLM_ERROR',
+        message: 'Gemini API error or malformed JSON',
         retryable: true,
       },
       headers: {},

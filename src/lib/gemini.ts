@@ -117,6 +117,28 @@ export function isLLMTimeoutError(error: unknown): error is LLMTimeoutError {
   );
 }
 
+export class GeminiTransportError extends Error {
+  readonly code = 'GEMINI_TRANSPORT_ERROR';
+  readonly providerName: GeminiRequestConfig['providerName'];
+
+  constructor(providerName: GeminiRequestConfig['providerName'], cause: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(`${providerName} transport error: ${message}`);
+    this.name = 'GeminiTransportError';
+    this.providerName = providerName;
+  }
+}
+
+export function isGeminiTransportError(error: unknown): error is GeminiTransportError {
+  return (
+    error instanceof GeminiTransportError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'GEMINI_TRANSPORT_ERROR')
+  );
+}
+
 function describeValueType(value: unknown) {
   if (value === undefined) {
     return 'undefined';
@@ -309,6 +331,18 @@ function validateGeminiResponse(parsedResult: unknown): GeminiResponse {
         'generatedCopy.disclaimerText'
       ),
     },
+  };
+}
+
+function validateGenerateCopyResponse(parsedResult: unknown): GenerateResponse {
+  const root = expectObject(parsedResult, 'response');
+
+  return {
+    tiktokHeadline: expectString(root.tiktokHeadline, 'tiktokHeadline'),
+    tiktokCta: expectString(root.tiktokCta, 'tiktokCta'),
+    benefits: expectStringArray(root.benefits, 'benefits'),
+    explanation: expectString(root.explanation, 'explanation'),
+    disclaimerText: expectOptionalString(root.disclaimerText, 'disclaimerText'),
   };
 }
 
@@ -647,7 +681,11 @@ async function callVertex(parts: VertexPart[], options: GeminiCallOptions = {}) 
       throw createTimeoutError(timeoutMs);
     }
 
-    throw error;
+    if (isGeminiTransportError(error)) {
+      throw error;
+    }
+
+    throw new GeminiTransportError(requestConfig.providerName, error);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -729,13 +767,6 @@ export async function generateCopyWithGemini(
 ): Promise<GenerateResponse> {
   const prompt = `${COPY_GENERATION_PROMPT}\n\nContext:\n${JSON.stringify(context, null, 2)}`;
   const text = await callVertex([{ text: prompt }], options);
-  const result = parseJsonResponse<GenerateResponse>(text);
 
-  return {
-    tiktokHeadline: result.tiktokHeadline,
-    tiktokCta: result.tiktokCta,
-    benefits: result.benefits,
-    explanation: result.explanation,
-    disclaimerText: result.disclaimerText,
-  };
+  return validateGenerateCopyResponse(parseJsonResponse<unknown>(text));
 }
