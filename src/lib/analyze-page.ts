@@ -429,6 +429,32 @@ async function hasLoadedDocument(page: Page) {
   }
 }
 
+async function getBrowserErrorPageFailure(page: Page) {
+  const pageUrl = page.url().toLowerCase();
+
+  if (pageUrl.startsWith('chrome-error://') || pageUrl.startsWith('about:blank')) {
+    return createAnalyzeFailure('PAGE_NOT_FOUND');
+  }
+
+  try {
+    const pageSignalText = await page.evaluate(() =>
+      `${document.title}\n${document.body?.innerText || ''}`.toLowerCase()
+    );
+
+    if (
+      /net::err_/i.test(pageSignalText) ||
+      /this site can.?t be reached|dns_probe_finished|this page isn.?t working/i.test(pageSignalText) ||
+      NOT_FOUND_MESSAGE_PATTERNS.some((pattern) => pageSignalText.includes(pattern))
+    ) {
+      return createAnalyzeFailure('PAGE_NOT_FOUND');
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 async function waitForRenderedFormSignals(
   page: Page,
   scrapeDeadlineMs: number,
@@ -470,9 +496,16 @@ async function navigateToLandingPage(
       await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
       return;
     } catch (error) {
-      if (error instanceof Error && /timeout/i.test(error.message) && await hasLoadedDocument(page)) {
-        await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
-        return;
+      if (error instanceof Error && /timeout/i.test(error.message)) {
+        const browserErrorPageFailure = await getBrowserErrorPageFailure(page);
+        if (browserErrorPageFailure) {
+          throw browserErrorPageFailure;
+        }
+
+        if (await hasLoadedDocument(page)) {
+          await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
+          return;
+        }
       }
 
       const normalizedError = normalizeNavigationError(error);

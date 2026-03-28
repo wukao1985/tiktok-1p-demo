@@ -76,6 +76,17 @@ export interface KvClient {
 }
 
 const fallbackStore = new Map<string, KvEntry>();
+const hasRemoteKvConfig = Boolean(process.env.KV_REST_API_URL);
+const isLocalDevelopment = process.env.NODE_ENV === 'development';
+const allowMemoryKvFallback =
+  !hasRemoteKvConfig &&
+  (
+    isLocalDevelopment ||
+    (
+      process.env.NODE_ENV !== 'production' &&
+      process.env.ALLOW_MEMORY_KV === 'true'
+    )
+  );
 
 function isEntryExpired(entry: KvEntry) {
   return entry.expiresAt !== undefined && entry.expiresAt <= Date.now();
@@ -217,4 +228,39 @@ const fallbackKv: KvClient = {
   },
 };
 
-export const kv: KvClient = process.env.KV_REST_API_URL ? vercelKv : fallbackKv;
+function createMissingKvError() {
+  const baseMessage =
+    'Vercel KV is required for persistent analysis storage. Set KV_REST_API_URL to a real KV instance.';
+
+  if (process.env.NODE_ENV === 'production') {
+    return new Error(`${baseMessage} In production, the in-memory KV fallback is disabled.`);
+  }
+
+  return new Error(
+    `${baseMessage} For ephemeral non-production runs, set ALLOW_MEMORY_KV=true to opt into the in-memory fallback.`
+  );
+}
+
+const disabledKv: KvClient = {
+  async get<TData = string>(_key: string) {
+    throw createMissingKvError();
+  },
+
+  async set<TData>(_key: string, _value: TData, _opts?: SetCommandOptions) {
+    throw createMissingKvError();
+  },
+
+  async incr(_key: string) {
+    throw createMissingKvError();
+  },
+
+  async expire(_key: string, _seconds: number, _option?: ExpireOption) {
+    throw createMissingKvError();
+  },
+};
+
+export const kv: KvClient = hasRemoteKvConfig
+  ? vercelKv
+  : allowMemoryKvFallback
+    ? fallbackKv
+    : disabledKv;

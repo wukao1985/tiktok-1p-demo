@@ -159,9 +159,70 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
       url: 'https://www.sonobello.com/consultation/',
       title: 'Sono Bello — Body Contouring & Liposuction',
       screenshotUrl: '/sonobello-step1.png',
-      fields: [],
+      fields: [
+        {
+          id: 'step1_field_1',
+          label: 'First Name',
+          type: 'text',
+          required: true,
+          confidence: 0.98,
+          tiktokFieldId: 'first_name',
+          tiktokFieldType: 'FULL_NAME',
+          sourceSelector: "input[name='firstName']"
+        },
+        {
+          id: 'step1_field_2',
+          label: 'Last Name',
+          type: 'text',
+          required: true,
+          confidence: 0.98,
+          tiktokFieldId: 'last_name',
+          tiktokFieldType: 'FULL_NAME',
+          sourceSelector: "input[name='lastName']"
+        },
+        {
+          id: 'step1_field_3',
+          label: 'Email',
+          type: 'email',
+          required: true,
+          confidence: 0.99,
+          tiktokFieldId: 'email',
+          tiktokFieldType: 'EMAIL',
+          sourceSelector: "input[type='email']"
+        },
+        {
+          id: 'step1_field_4',
+          label: 'Phone',
+          type: 'tel',
+          required: true,
+          confidence: 0.97,
+          tiktokFieldId: 'phone',
+          tiktokFieldType: 'PHONE_NUMBER',
+          sourceSelector: "input[type='tel']"
+        },
+        {
+          id: 'step1_field_5',
+          label: 'ZIP Code',
+          type: 'zip',
+          required: true,
+          confidence: 0.95,
+          tiktokFieldId: 'zip_code',
+          tiktokFieldType: 'ZIP_POST_CODE',
+          sourceSelector: "input[name='zip']"
+        },
+        {
+          id: 'step1_field_6',
+          label: 'Body Area of Interest',
+          type: 'dropdown',
+          required: false,
+          confidence: 0.88,
+          tiktokFieldId: 'custom_body_area',
+          tiktokFieldType: 'CUSTOM',
+          sourceSelector: "select[name='bodyArea']"
+        }
+      ],
       ctaText: 'See If You Qualify',
-      stepType: 'landing'
+      stepType: 'form'
     },
     {
       stepNumber: 2,
@@ -332,10 +393,10 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     }
   ],
   formBoundingBox: {
-    x: 600,
-    y: 200,
+    x: 50,
+    y: 350,
     width: 400,
-    height: 300
+    height: 50
   },
   primaryFormStepNumber: 1,
   generatedCopy: {
@@ -374,9 +435,20 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
       url: 'https://www.opendoor.com',
       title: 'Opendoor — Sell Your Home',
       screenshotUrl: '/opendoor-step1.png',
-      fields: [],
+      fields: [
+        {
+          id: 'step1_field_1',
+          label: 'Street Address',
+          type: 'text',
+          required: true,
+          confidence: 0.99,
+          tiktokFieldId: 'street_address',
+          tiktokFieldType: 'CUSTOM',
+          sourceSelector: "input[name='address']"
+        }
+      ],
       ctaText: 'Get Your Offer',
-      stepType: 'landing'
+      stepType: 'form'
     },
     {
       stepNumber: 2,
