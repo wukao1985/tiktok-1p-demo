@@ -110,7 +110,17 @@ const BOT_BLOCK_KEYWORDS = [
   'bot detection',
   'unusual traffic',
   'security check',
-  'blocked',
+  'checking your browser',
+  'press and hold',
+];
+const BOT_BLOCK_TITLE_PATTERNS = [
+  'just a moment',
+  'verify you are human',
+  'verify you\'re human',
+  'attention required',
+  'access denied',
+  'security check',
+  'checking your browser',
 ];
 const BOT_BLOCK_SELECTORS = [
   'iframe[src*="captcha"]',
@@ -124,7 +134,6 @@ const BOT_BLOCK_SELECTORS = [
   '#challenge-running',
   'form[action*="challenge"]',
 ];
-const BOT_BLOCK_URL_KEYWORDS = ['captcha', 'challenge', 'blocked', 'deny', 'verify'];
 const NOT_FOUND_MESSAGE_PATTERNS = [
   'err_name_not_resolved',
   'enotfound',
@@ -407,23 +416,35 @@ async function normalizePostClickNavigationOutcome(
 }
 
 async function detectBotProtection(page: Page) {
-  const urlMatch = BOT_BLOCK_URL_KEYWORDS.some((keyword) => page.url().toLowerCase().includes(keyword));
   const domSignal = await page.evaluate(
-    ({ keywords, selectors }) => {
+    ({ keywords, selectors, titlePatterns, statusCodes }) => {
       const pageText = `${document.title}\n${document.body?.innerText || ''}`.toLowerCase();
       const keywordMatch = keywords.some((keyword) => pageText.includes(keyword));
       const selectorMatch = selectors.some((selector) => Boolean(document.querySelector(selector)));
-      const titleMatch = /just a moment|verify|attention required|access denied/i.test(document.title);
+      const lowerTitle = document.title.toLowerCase();
+      const titleMatch = titlePatterns.some((pattern) => lowerTitle.includes(pattern));
+      const navigationEntry = performance.getEntriesByType('navigation')[0] as
+        | (PerformanceEntry & {
+            responseStatus?: number;
+          })
+        | undefined;
+      const responseStatus =
+        typeof navigationEntry?.responseStatus === 'number'
+          ? navigationEntry.responseStatus
+          : null;
+      const statusMatch = responseStatus !== null && statusCodes.includes(responseStatus);
 
-      return keywordMatch || selectorMatch || titleMatch;
+      return keywordMatch || selectorMatch || titleMatch || statusMatch;
     },
     {
       keywords: BOT_BLOCK_KEYWORDS,
       selectors: BOT_BLOCK_SELECTORS,
+      titlePatterns: BOT_BLOCK_TITLE_PATTERNS,
+      statusCodes: Array.from(BOT_BLOCK_STATUS_CODES),
     }
   );
 
-  return urlMatch || domSignal;
+  return domSignal;
 }
 
 async function ensureNotBlocked(page: Page) {
@@ -601,6 +622,31 @@ async function extractPrimaryFormFromPage(
         return searchText.includes('search');
       };
 
+      const getNodeText = (element: Element) =>
+        (
+          element.textContent ||
+          element.getAttribute('aria-label') ||
+          element.getAttribute('value') ||
+          ''
+        )
+          .trim()
+          .replace(/\s+/g, ' ');
+
+      const isVisibleElement = (element: Element) => {
+        if (!(element instanceof HTMLElement)) {
+          return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      };
+
       const getSupportedFields = (root: ParentNode) =>
         Array.from(root.querySelectorAll(fieldSelectorQuery))
           .filter(isFormControl)
@@ -617,41 +663,134 @@ async function extractPrimaryFormFromPage(
         return (inputs * 10) + (isVisible ? 50 : 0) + (hasSubmit ? 30 : 0) - (rect.top * 0.01);
       };
 
-      const formCandidates = Array.from(
+      const getNonFormContainerSelectionScore = (container: Element, totalFieldCount: number) => {
+        const fieldCount = getSupportedFields(container).length;
+        const rect = container.getBoundingClientRect();
+        const role = (container.getAttribute('role') || '').toLowerCase();
+        const tagName = container.tagName.toLowerCase();
+        const className =
+          typeof (container as HTMLElement).className === 'string'
+            ? (container as HTMLElement).className
+            : '';
+        const hintText = [
+          container.id || '',
+          className,
+          container.getAttribute('aria-label') || '',
+          container.getAttribute('data-testid') || '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        const isSemanticContainer =
+          ['section', 'article', 'aside', 'main', 'fieldset'].includes(tagName) ||
+          ['form', 'dialog', 'group', 'region'].includes(role) ||
+          /(form|lead|quote|estimate|consult|schedule|book|apply|signup|register|contact|modal|dialog|popup|card|panel|step)/i.test(
+            hintText
+          );
+        const hasAction = Array.from(
+          container.querySelectorAll(
+            'button, input[type="submit"], input[type="button"], [role="button"], a[href]'
+          )
+        ).some((element) =>
+          /submit|continue|next|get started|book|schedule|consult|quote|estimate|offer|apply|start|request|send/i.test(
+            getNodeText(element).toLowerCase()
+          )
+        );
+
+        let score = getFieldScore(container);
+        if (fieldCount < totalFieldCount) {
+          score += 15;
+        }
+        if (fieldCount === totalFieldCount && totalFieldCount > 2) {
+          score -= 20;
+        }
+        if (isSemanticContainer) {
+          score += 10;
+        }
+        if (hasAction) {
+          score += 15;
+        }
+        if (fieldCount === 2 && !isSemanticContainer && !hasAction) {
+          score -= 15;
+        }
+
+        const area = Math.max(1, rect.width * rect.height);
+        return { score, area };
+      };
+
+      const findBestNonFormContainer = (
+        field: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+        totalFieldCount: number
+      ) => {
+        let current = field.parentElement;
+        let bestCandidate:
+          | {
+              element: Element;
+              score: number;
+              area: number;
+            }
+          | null = null;
+
+        while (current && current !== document.body && current !== document.documentElement) {
+          const fieldCount = getSupportedFields(current).length;
+
+          if (fieldCount >= 2 && isVisibleElement(current)) {
+            const selectionScore = getNonFormContainerSelectionScore(current, totalFieldCount);
+
+            if (
+              !bestCandidate ||
+              selectionScore.score > bestCandidate.score ||
+              (
+                selectionScore.score === bestCandidate.score &&
+                selectionScore.area < bestCandidate.area
+              )
+            ) {
+              bestCandidate = {
+                element: current,
+                score: selectionScore.score,
+                area: selectionScore.area,
+              };
+            }
+          }
+
+          current = current.parentElement;
+        }
+
+        return bestCandidate?.element ?? null;
+      };
+
+      const documentFields = getSupportedFields(document);
+      const containerCandidates = Array.from(
         new Set(
-          getSupportedFields(document)
-            .map((field) => field.closest('form'))
-            .filter((form): form is HTMLFormElement => form instanceof HTMLFormElement)
+          documentFields
+            .map((field) => field.closest('form') ?? findBestNonFormContainer(field, documentFields.length))
+            .filter((container): container is Element => Boolean(container))
         )
       );
 
-      const scoredForms = formCandidates
-        .map((form) => ({
-          form,
-          score: getFieldScore(form),
+      const scoredCandidates = containerCandidates
+        .map((container) => ({
+          container,
+          score: getFieldScore(container),
         }))
         .sort((a, b) => b.score - a.score);
 
-      const topCandidateScore = scoredForms[0]?.score ?? 0;
-      const runnerUpScore = scoredForms[1]?.score ?? 0;
+      const topCandidateScore = scoredCandidates[0]?.score ?? 0;
+      const runnerUpScore = scoredCandidates[1]?.score ?? 0;
       const shouldRaiseUncertain =
-        formCandidates.length > 0 &&
+        containerCandidates.length > 0 &&
         (
           topCandidateScore < 60 ||
-          (formCandidates.length > 1 && (topCandidateScore - runnerUpScore) < 15)
+          (containerCandidates.length > 1 && (topCandidateScore - runnerUpScore) < 15)
         );
 
       let selectedContainer: Element | null = null;
 
-      if (formCandidates.length === 1) {
-        selectedContainer = formCandidates[0];
-      } else if (formCandidates.length > 1) {
-        selectedContainer = scoredForms[0]?.form ?? null;
-      } else if (formCandidates.length === 0) {
-        const documentFields = getSupportedFields(document);
-        if (documentFields.length > 0) {
-          selectedContainer = document.body;
-        }
+      if (containerCandidates.length === 1) {
+        selectedContainer = containerCandidates[0];
+      } else if (containerCandidates.length > 1) {
+        selectedContainer = scoredCandidates[0]?.container ?? null;
+      } else if (documentFields.length > 0) {
+        selectedContainer = document.body;
       }
 
       if (!selectedContainer) {
