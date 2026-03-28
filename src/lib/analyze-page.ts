@@ -377,18 +377,32 @@ function getNavigationFailureForStatus(status?: number | null) {
   return null;
 }
 
-function normalizePostClickNavigationOutcome(outcome: PostClickNavigationOutcome) {
-  if (outcome.type === 'timeout') {
-    return;
-  }
-
+async function normalizePostClickNavigationOutcome(
+  page: Page,
+  outcome: PostClickNavigationOutcome
+) {
   if (outcome.type === 'error') {
     throw normalizeNavigationError(outcome.error);
   }
 
-  const navigationFailure = getNavigationFailureForStatus(outcome.response?.status());
+  const navigationFailure =
+    outcome.type === 'response'
+      ? getNavigationFailureForStatus(outcome.response?.status())
+      : null;
   if (navigationFailure) {
     throw navigationFailure;
+  }
+
+  const shouldCheckBrowserErrorPage =
+    outcome.type === 'timeout' ||
+    (outcome.type === 'response' && !outcome.response);
+  if (!shouldCheckBrowserErrorPage) {
+    return;
+  }
+
+  const browserErrorPageFailure = await getBrowserErrorPageFailure(page);
+  if (browserErrorPageFailure) {
+    throw browserErrorPageFailure;
   }
 }
 
@@ -1073,16 +1087,17 @@ async function waitForInteractionToSettle(
   page: Page,
   scrapeDeadlineMs: number,
   navigationOutcomePromise: Promise<PostClickNavigationOutcome>,
+  finalizeNavigationOutcome: () => Promise<PostClickNavigationOutcome>,
   signal?: AbortSignal
 ) {
   const timeoutMs = getBoundedTimeout(scrapeDeadlineMs, POST_CLICK_SETTLE_TIMEOUT, 150);
   if (timeoutMs <= 0) {
-    normalizePostClickNavigationOutcome(await navigationOutcomePromise);
+    await finalizeNavigationOutcome();
     return;
   }
 
-  const settleOutcome = await Promise.race([
-    navigationOutcomePromise.then((outcome) => ({ type: 'navigation' as const, outcome })),
+  await Promise.race([
+    navigationOutcomePromise.then(() => ({ type: 'navigation' as const })),
     page
       .waitForNetworkIdle({
         idleTime: 500,
@@ -1093,10 +1108,7 @@ async function waitForInteractionToSettle(
     waitWithSignal(Math.min(timeoutMs, 1200), signal).then(() => ({ type: 'timeout' as const })),
   ]);
 
-  const navigationOutcome = settleOutcome.type === 'navigation'
-    ? settleOutcome.outcome
-    : await navigationOutcomePromise;
-  normalizePostClickNavigationOutcome(navigationOutcome);
+  await finalizeNavigationOutcome();
 
   await waitForRenderedFormSignals(page, scrapeDeadlineMs, signal);
   await waitForHumanDelay(scrapeDeadlineMs, signal);
@@ -1130,18 +1142,47 @@ async function clickElementHandle(
             return { type: 'error' as const, error };
           })
       : Promise.resolve({ type: 'timeout' as const });
+    let finalizedNavigationOutcomePromise: Promise<PostClickNavigationOutcome> | null = null;
+    const finalizeNavigationOutcome = () => {
+      if (!finalizedNavigationOutcomePromise) {
+        finalizedNavigationOutcomePromise = (async () => {
+          const navigationOutcome = await navigationOutcomePromise;
+          await normalizePostClickNavigationOutcome(page, navigationOutcome);
+          return navigationOutcome;
+        })();
+      }
+
+      return finalizedNavigationOutcomePromise;
+    };
+    let interactionSettled = false;
 
     try {
-      await element.click({ delay: getRandomInt(40, 120) });
-    } catch {
-      await element.evaluate((node) => {
-        if (node instanceof HTMLElement) {
-          node.click();
-        }
-      });
+      try {
+        await element.click({ delay: getRandomInt(40, 120) });
+      } catch {
+        await element.evaluate((node) => {
+          if (node instanceof HTMLElement) {
+            node.click();
+          }
+        });
+      }
+
+      await waitForInteractionToSettle(
+        page,
+        scrapeDeadlineMs,
+        navigationOutcomePromise,
+        finalizeNavigationOutcome,
+        signal
+      );
+      interactionSettled = true;
+    } finally {
+      await finalizeNavigationOutcome();
+
+      if (!interactionSettled) {
+        await ensureNotBlocked(page);
+      }
     }
 
-    await waitForInteractionToSettle(page, scrapeDeadlineMs, navigationOutcomePromise, signal);
     return true;
   } catch (error) {
     if (isAnalyzeFailure(error)) {

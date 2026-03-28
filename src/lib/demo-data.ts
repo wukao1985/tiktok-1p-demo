@@ -117,10 +117,10 @@ export const SONO_BELLO_DEMO: AnalyzeResponseData = {
     }
   ],
   formBoundingBox: {
-    x: 680,
-    y: 240,
-    width: 480,
-    height: 520
+    x: 180,
+    y: 740,
+    width: 520,
+    height: 150
   },
   primaryFormStepNumber: 1,
   generatedCopy: {
@@ -393,10 +393,10 @@ export const OPENDOOR_DEMO: AnalyzeResponseData = {
     }
   ],
   formBoundingBox: {
-    x: 50,
-    y: 350,
-    width: 400,
-    height: 50
+    x: 95,
+    y: 560,
+    width: 390,
+    height: 75
   },
   primaryFormStepNumber: 1,
   generatedCopy: {
