@@ -446,7 +446,7 @@ async function hasLoadedDocument(page: Page) {
 async function getBrowserErrorPageFailure(page: Page) {
   const pageUrl = page.url().toLowerCase();
 
-  if (pageUrl.startsWith('chrome-error://') || pageUrl.startsWith('about:blank')) {
+  if (pageUrl.startsWith('chrome-error://')) {
     return createAnalyzeFailure('PAGE_NOT_FOUND');
   }
 
@@ -455,6 +455,9 @@ async function getBrowserErrorPageFailure(page: Page) {
       `${document.title}\n${document.body?.innerText || ''}`.toLowerCase()
     );
 
+    // A pending navigation can legitimately remain on about:blank until the first
+    // response commits, so only treat it as not-found when the page content also
+    // shows a browser/network error signal.
     if (
       /net::err_/i.test(pageSignalText) ||
       /this site can.?t be reached|dns_probe_finished|this page isn.?t working/i.test(pageSignalText) ||
